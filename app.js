@@ -1,6 +1,6 @@
 // ── Config ────────────────────────────────────────────────────────────────────
 const SUPABASE_URL  = 'https://bxcqjjzxwkqytcmpyfuj.supabase.co';
-const SUPABASE_ANON = 'sb_publishable_ud8ZS06P0hPF7-PjOY90oQ_q9YpbZ0R';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1dnRrY3BubWxuZmFhYnFhYnRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczNzcxMTQsImV4cCI6MjA5Mjk1MzExNH0.Hir59fESWVsBb7fcJJxsUXVk9BG5W9MqXDuHgmanIr0';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // Admin email - only this user sees admin panel
