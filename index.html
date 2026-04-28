@@ -203,37 +203,16 @@
     <!-- scansBar eliminado — sin límites durante beta -->
 
     <!-- Próximamente -->
-    <div class="coming-soon-card">
-      <p class="coming-label">🚀 Próximamente</p>
-      <div class="coming-grid">
-        <div class="coming-item">
-          <span class="coming-icon">📋</span>
-          <div>
-            <p class="coming-name">Docs médicos</p>
-            <p class="coming-desc">Sube el informe del alergólogo</p>
-          </div>
+    <div class="smart-list-card">
+      <div class="smart-list-head">
+        <div>
+          <p class="coming-label">⭐ Lista rápida</p>
+          <p class="smart-list-sub">Productos guardados para este perfil</p>
         </div>
-        <div class="coming-item">
-          <span class="coming-icon">🔄</span>
-          <div>
-            <p class="coming-name">Alternativas</p>
-            <p class="coming-desc">Si no es apto, te sugerimos uno que sí</p>
-          </div>
-        </div>
-        <div class="coming-item">
-          <span class="coming-icon">⭐</span>
-          <div>
-            <p class="coming-name">Favoritos</p>
-            <p class="coming-desc">Lista de productos seguros</p>
-          </div>
-        </div>
-        <div class="coming-item">
-          <span class="coming-icon">🔔</span>
-          <div>
-            <p class="coming-name">Alertas</p>
-            <p class="coming-desc">Si cambia un producto que usas</p>
-          </div>
-        </div>
+        <button class="mini-link" onclick="clearSavedProducts()">Limpiar</button>
+      </div>
+      <div id="savedProductsList" class="saved-products-list">
+        <p class="empty-state compact">Todavía no hay productos guardados.</p>
       </div>
     </div>
 
@@ -283,9 +262,28 @@
           <p id="ingredientsFound" class="ingredients-text"></p>
         </div>
       </div>
+      <div class="result-detail" id="alternativesBlock" style="display:none">
+        <div class="detail-block">
+          <p class="detail-label">Alternativas seguras sugeridas</p>
+          <div id="alternativesList" class="alternatives-list"></div>
+        </div>
+      </div>
+
+      <div class="result-detail" id="nextStepsBlock" style="display:none">
+        <div class="detail-block">
+          <p class="detail-label">Qué hacer ahora</p>
+          <div id="nextStepsList" class="next-steps-list"></div>
+        </div>
+      </div>
+
       <div class="laztan-badge">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="8" fill="#7ed957" opacity=".2"/><path d="M4 8.5l2.5 2.5 5.5-5.5" stroke="#7ed957" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Análisis validado con protocolos <strong>Laztan</strong></span>
+      </div>
+      <div class="result-actions-card">
+        <button class="btn-secondary compact" onclick="saveCurrentProduct('safe')">⭐ Guardar como seguro</button>
+        <button class="btn-secondary compact" onclick="saveCurrentProduct('avoid')">🚫 Guardar como evitar</button>
+        <button class="btn-secondary compact" onclick="copyResultSummary()">📋 Copiar resumen</button>
       </div>
       <div class="app-banner app-banner--result">
         <img src="https://Aka625.b-cdn.net/Varios/bannersafebite%20.png" alt="SafeBite" class="app-banner-img" onerror="this.parentElement.style.display='none'"/>

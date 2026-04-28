@@ -31,6 +31,7 @@ let state = {
   pendingAllergenId: null, editingChildId: null, recognition: null,
   childDocs: [], // docs for the child being edited/created
   lastScanInput: null,
+  lastResult: null,
 };
 
 // ── Init ───────────────────────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ function renderHome() {
     document.getElementById('heroAllergens').textContent = 'Toca + para crear un perfil';
   }
   // Sin límites durante beta — scansBar eliminado
+  renderSavedProducts();
 }
 
 // ── Render profile ─────────────────────────────────────────────────────────────
@@ -717,8 +719,11 @@ function showResult(result) {
   document.getElementById('resultTitle').style.color = color;
   document.getElementById('resultChild').textContent = state.activeChild ? `Perfil: ${state.activeChild.emoji} ${state.activeChild.name}` : '';
   document.getElementById('resultExplanation').textContent = result.explanation || '';
+  state.lastResult = result;
 
   renderResultInputPreview(result.input_preview || state.lastScanInput, result.confidence);
+  renderAlternatives(result);
+  renderNextSteps(result);
 
   const rL = document.getElementById('risksList'); rL.innerHTML = '';
   if (result.risks?.length) { result.risks.forEach(r => { const c = document.createElement('span'); c.className = 'risk-chip'; c.textContent = r; rL.appendChild(c); }); document.getElementById('risksBlock').style.display = 'block'; }
@@ -760,6 +765,137 @@ function renderResultInputPreview(input, confidence) {
     : `<div class="input-preview-text">${escapeHtml(input.textPreview || 'Texto manual analizado')}</div>`;
   box.innerHTML = `${media}${meta}`;
   block.style.display = 'block';
+}
+
+function renderAlternatives(result) {
+  const block = document.getElementById('alternativesBlock');
+  const list = document.getElementById('alternativesList');
+  if (!block || !list) return;
+  const status = result.status || '';
+  if (status === 'APTO') { block.style.display = 'none'; return; }
+
+  const detected = [
+    ...(result.hidden_allergens || []),
+    ...(result.risks || [])
+  ].join(' ').toLowerCase();
+
+  const avoid = [];
+  if (detected.includes('leche') || detected.includes('láct') || detected.includes('lact')) avoid.push('leche y derivados: caseína, lactosuero, proteína láctea, leche en polvo');
+  if (detected.includes('gluten') || detected.includes('trigo') || detected.includes('cebada')) avoid.push('gluten: trigo, cebada, centeno, espelta, sémola, malta');
+  if (detected.includes('huevo') || detected.includes('albúmina')) avoid.push('huevo y derivados: albúmina, clara, huevo en polvo');
+  if (detected.includes('soja')) avoid.push('soja: lecitina de soja, proteína de soja, harina de soja');
+  if (detected.includes('frutos') || detected.includes('cacahuete') || detected.includes('maní')) avoid.push('frutos secos/cacahuete: almendra, avellana, nuez, pistacho, maní');
+  if (detected.includes('crust') || detected.includes('molusc') || detected.includes('pescado')) avoid.push('pescado, crustáceos o moluscos y trazas cruzadas');
+
+  const tips = [
+    'Busca una opción con etiqueta completa y alérgenos destacados en negrita.',
+    avoid.length ? 'Evita productos que indiquen: ' + avoid.slice(0, 3).join(' · ') : 'Elige una alternativa con lista de ingredientes clara y sin advertencias de trazas.',
+    'Prioriza productos con mención explícita “sin” el alérgeno relevante y sin contaminación cruzada para perfil grave.',
+    'Si es comida preparada/restaurante, pide ficha técnica o ingredientes por escrito antes de decidir.'
+  ];
+
+  list.innerHTML = tips.map(t => '<div class="alternative-item">' + escapeHtml(t) + '</div>').join('');
+  block.style.display = 'block';
+}
+
+function renderNextSteps(result) {
+  const block = document.getElementById('nextStepsBlock');
+  const list = document.getElementById('nextStepsList');
+  if (!block || !list) return;
+  const status = result.status || '';
+  let steps;
+  if (status === 'APTO') {
+    steps = [
+      'Puedes guardarlo como producto seguro para este perfil.',
+      'Revisa de nuevo si cambia el envase, la receta o el lote.',
+      'Mantén la etiqueta visible si lo vas a compartir con otra persona.'
+    ];
+  } else if (status === 'NO VERIFICABLE') {
+    steps = [
+      'No tomes una decisión final solo con esta imagen.',
+      'Sube la etiqueta, la ficha de ingredientes o escribe la receta completa.',
+      'Si es restaurante, pide información de alérgenos y contaminación cruzada.'
+    ];
+  } else if (status === 'PRECAUCION') {
+    steps = [
+      'Revisa manualmente los ingredientes detectados.',
+      'Usa “Corregir / añadir ingredientes” si el OCR leyó algo mal.',
+      'Si el perfil es grave, trata la duda como no apto hasta confirmar.'
+    ];
+  } else {
+    steps = [
+      'No lo uses para este perfil salvo confirmación profesional.',
+      'Guárdalo como “evitar” para no repetir el análisis.',
+      'Busca una alternativa sin los alérgenos o trazas detectadas.'
+    ];
+  }
+  list.innerHTML = steps.map(t => '<div class="next-step-item">' + escapeHtml(t) + '</div>').join('');
+  block.style.display = 'block';
+}
+
+function getSavedProducts() {
+  try { return JSON.parse(localStorage.getItem('safebite_saved_products_v1') || '[]'); }
+  catch(e) { return []; }
+}
+
+function setSavedProducts(items) {
+  localStorage.setItem('safebite_saved_products_v1', JSON.stringify(items.slice(0, 50)));
+}
+
+function currentProductName(result = state.lastResult) {
+  const input = result?.input_preview || state.lastScanInput || {};
+  const base = input.fileName || input.type || 'Producto analizado';
+  return String(base).replace(/\.(jpg|jpeg|png|webp|heic)$/i, '').replace(/^WhatsApp Image [^ ]+ at /i, 'Foto ');
+}
+
+function saveCurrentProduct(kind) {
+  if (!state.lastResult) return alert('No hay resultado para guardar');
+  const items = getSavedProducts();
+  const childId = state.activeChild?.id || 'general';
+  const item = {
+    id: Date.now(),
+    childId,
+    childName: state.activeChild?.name || 'Perfil',
+    kind,
+    status: state.lastResult.status || '—',
+    name: currentProductName(),
+    explanation: state.lastResult.explanation || '',
+    date: new Date().toISOString()
+  };
+  setSavedProducts([item, ...items.filter(x => !(x.childId === childId && x.name === item.name))]);
+  renderSavedProducts();
+  alert(kind === 'safe' ? 'Guardado como producto seguro.' : 'Guardado como producto a evitar.');
+}
+
+function renderSavedProducts() {
+  const list = document.getElementById('savedProductsList');
+  if (!list) return;
+  const childId = state.activeChild?.id || 'general';
+  const items = getSavedProducts().filter(x => x.childId === childId).slice(0, 6);
+  if (!items.length) {
+    list.innerHTML = '<p class="empty-state compact">Todavía no hay productos guardados para este perfil.</p>';
+    return;
+  }
+  list.innerHTML = items.map(x => {
+    const icon = x.kind === 'safe' ? '⭐' : '🚫';
+    const cls = x.kind === 'safe' ? 'saved-safe' : 'saved-avoid';
+    const date = x.date ? new Date(x.date).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit' }) : '';
+    return '<div class="saved-product ' + cls + '"><span>' + icon + '</span><div><strong>' + escapeHtml(x.name) + '</strong><small>' + escapeHtml(x.status) + ' · ' + date + '</small></div></div>';
+  }).join('');
+}
+
+function clearSavedProducts() {
+  if (!confirm('¿Limpiar la lista rápida de este perfil?')) return;
+  const childId = state.activeChild?.id || 'general';
+  setSavedProducts(getSavedProducts().filter(x => x.childId !== childId));
+  renderSavedProducts();
+}
+
+function copyResultSummary() {
+  if (!state.lastResult) return;
+  const child = state.activeChild ? `${state.activeChild.emoji} ${state.activeChild.name}` : 'Perfil';
+  const text = `SafeBite - Resultado\nPerfil: ${child}\nEstado: ${state.lastResult.status}\nConfianza: ${state.lastResult.confidence || '—'}\nEntrada: ${currentProductName()}\n\n${state.lastResult.explanation || ''}\n\nRiesgos: ${(state.lastResult.risks || []).join('; ') || 'No especificados'}\nIngredientes detectados: ${state.lastResult.ingredients_found || '—'}`;
+  navigator.clipboard?.writeText(text).then(() => alert('Resumen copiado.')).catch(() => alert(text));
 }
 
 function editLastAnalysisText() {
@@ -865,8 +1001,8 @@ async function loadHistory() {
   if (!scans?.length) { list.innerHTML = '<p class="empty-state">No hay escaneos todavía.<br/>¡Escanea tu primer producto!</p>'; return; }
   list.innerHTML = '';
   scans.forEach(scan => {
-    const icon = scan.status === 'APTO' ? '🟢' : scan.status === 'PRECAUCION' ? '🟡' : '🔴';
-    const cls  = scan.status === 'APTO' ? 'apto' : scan.status === 'PRECAUCION' ? 'precaucion' : 'no-apto';
+    const icon = scan.status === 'APTO' ? '🟢' : scan.status === 'PRECAUCION' ? '🟡' : scan.status === 'NO VERIFICABLE' ? '⚪' : '🔴';
+    const cls  = scan.status === 'APTO' ? 'apto' : scan.status === 'PRECAUCION' ? 'precaucion' : scan.status === 'NO VERIFICABLE' ? 'no-verificable' : 'no-apto';
     const date = new Date(scan.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
     const item = document.createElement('div');
     item.className = 'history-item';

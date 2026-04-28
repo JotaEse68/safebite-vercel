@@ -79,3 +79,14 @@ En esta V1.1 los PDF/DOCX pueden adjuntarse, pero para que la IA los use de form
 - Botón `Corregir / añadir ingredientes` desde el resultado.
 - Historial con descripción más clara del tipo de análisis.
 - Análisis de platos más prudente: no declara APTO/NO APTO solo por una foto del plato.
+
+## V1.3 — Mejoras funcionales activas
+
+- Lista rápida por perfil con productos guardados como seguros o a evitar.
+- Acciones desde el resultado: guardar como seguro, guardar como evitar y copiar resumen.
+- Bloque de alternativas sugeridas cuando el resultado no es apto, precaución o no verificable.
+- Bloque de próximos pasos según el estado del análisis.
+- Historial preparado para mostrar correctamente `NO VERIFICABLE`.
+- Mejor UX para no repetir análisis y tomar decisiones más claras después de cada escaneo.
+
+Nota: la lista rápida se guarda localmente en el navegador en esta fase. La persistencia en Supabase queda preparada para una V1.4 con tabla `saved_products`.
