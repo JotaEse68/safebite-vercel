@@ -90,3 +90,64 @@ En esta V1.1 los PDF/DOCX pueden adjuntarse, pero para que la IA los use de form
 - Mejor UX para no repetir análisis y tomar decisiones más claras después de cada escaneo.
 
 Nota: la lista rápida se guarda localmente en el navegador en esta fase. La persistencia en Supabase queda preparada para una V1.4 con tabla `saved_products`.
+
+## V1.4 — Memoria real + historial + alternativas
+
+Incluye:
+
+- Tabla `saved_products` para productos seguros / evitar / pendientes por perfil.
+- Tabla `analysis_history` para guardar cada análisis real en Supabase.
+- Pantalla de historial avanzado con filtros.
+- Ficha de producto guardado.
+- Guardado de producto desde resultado y desde historial.
+- Botón de compartir por WhatsApp.
+- Resumen copiable mejorado.
+- Doble validación para OCR dudoso: corregir ingredientes y reanalizar.
+- Tabla `product_alternatives` para alternativas manuales desde admin.
+- Panel admin ampliado con alternativas y productos recientes.
+
+### Migración necesaria
+
+Antes de probar la V1.4, ejecuta en Supabase SQL Editor:
+
+```sql
+-- contenido de supabase_migration_v1_4.sql
+```
+
+Tablas nuevas:
+
+- `analysis_history`
+- `saved_products`
+- `product_alternatives`
+
+Después ejecuta o confirma:
+
+```sql
+NOTIFY pgrst, 'reload schema';
+```
+
+
+## V1.5 — Código de barras + catálogo propio
+
+Añade una opción complementaria a las existentes: `🏷️ Código de barras`.
+
+Flujo:
+1. Escanear o escribir EAN.
+2. Consultar Open Food Facts.
+3. Cachear el producto en `product_catalog`.
+4. Analizar ingredientes con SafeBite según el perfil activo.
+5. Guardar la decisión en historial y en `product_risk_assessments`.
+
+Migración requerida:
+`supabase_migration_v1_5.sql`
+
+Tablas nuevas:
+- `product_catalog`
+- `product_risk_assessments`
+
+Columnas añadidas:
+- `analysis_history.input_barcode`
+- `analysis_history.catalog_product_id`
+- `saved_products.barcode`
+- `saved_products.brand`
+- `saved_products.catalog_product_id`

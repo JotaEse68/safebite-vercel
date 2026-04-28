@@ -159,6 +159,11 @@
           <span class="scan-btn-text">Galería</span>
           <span class="scan-btn-sub">Sube una imagen</span>
         </button>
+        <button class="scan-btn scan-btn-featured" onclick="showBarcodeInput()">
+          <span class="scan-btn-icon">🏷️</span>
+          <span class="scan-btn-text">Código</span>
+          <span class="scan-btn-sub">Supermercado</span>
+        </button>
         <button class="scan-btn" onclick="triggerCamera('menu')">
           <span class="scan-btn-icon">🍽️</span>
           <span class="scan-btn-text">Menú</span>
@@ -179,6 +184,23 @@
           <span class="scan-btn-text">Texto</span>
           <span class="scan-btn-sub">Pega ingredientes</span>
         </button>
+      </div>
+
+      <div id="barcodeInputArea" class="text-input-area barcode-input-area hidden">
+        <p class="barcode-title">🏷️ Código de barras</p>
+        <p class="barcode-help">Escanea el EAN del producto o escríbelo manualmente. Si faltan ingredientes, SafeBite pedirá foto de etiqueta.</p>
+        <div class="barcode-row">
+          <input id="barcodeInput" class="text-field" inputmode="numeric" placeholder="Ej. 8480000000000" />
+          <button class="btn-primary compact" onclick="analyzeBarcodeFromInput()">Analizar</button>
+        </div>
+        <div class="barcode-actions">
+          <button class="btn-secondary compact" onclick="startBarcodeCamera()">📷 Escanear con cámara</button>
+          <button class="btn-secondary compact" onclick="stopBarcodeCamera()">Detener</button>
+        </div>
+        <div id="barcodeVideoWrap" class="barcode-video-wrap hidden">
+          <video id="barcodeVideo" playsinline muted></video>
+        </div>
+        <p id="barcodeStatus" class="scan-status"></p>
       </div>
 
       <div id="textInputArea" class="text-input-area hidden">
@@ -202,12 +224,12 @@
 
     <!-- scansBar eliminado — sin límites durante beta -->
 
-    <!-- Próximamente -->
+    <!-- Lista rápida real -->
     <div class="smart-list-card">
       <div class="smart-list-head">
         <div>
           <p class="coming-label">⭐ Lista rápida</p>
-          <p class="smart-list-sub">Productos guardados para este perfil</p>
+          <p class="smart-list-sub">Productos guardados en Supabase para este perfil</p>
         </div>
         <button class="mini-link" onclick="clearSavedProducts()">Limpiar</button>
       </div>
@@ -276,6 +298,15 @@
         </div>
       </div>
 
+      <div class="result-detail" id="validationBlock" style="display:none">
+        <div class="detail-block">
+          <p class="detail-label">Doble validación recomendada</p>
+          <p class="form-sublabel">Revisa los ingredientes detectados. Si el OCR se equivocó, corrige aquí y reanaliza antes de decidir.</p>
+          <textarea id="validationIngredients" rows="5" placeholder="Ingredientes detectados por la IA..."></textarea>
+          <button class="btn-primary compact" onclick="reanalyzeValidatedIngredients()">Confirmar y reanalizar texto</button>
+        </div>
+      </div>
+
       <div class="laztan-badge">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="8" fill="#7ed957" opacity=".2"/><path d="M4 8.5l2.5 2.5 5.5-5.5" stroke="#7ed957" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Análisis validado con protocolos <strong>Laztan</strong></span>
@@ -283,7 +314,9 @@
       <div class="result-actions-card">
         <button class="btn-secondary compact" onclick="saveCurrentProduct('safe')">⭐ Guardar como seguro</button>
         <button class="btn-secondary compact" onclick="saveCurrentProduct('avoid')">🚫 Guardar como evitar</button>
+        <button class="btn-secondary compact" onclick="saveCurrentProduct('pending')">🕒 Revisar luego</button>
         <button class="btn-secondary compact" onclick="copyResultSummary()">📋 Copiar resumen</button>
+        <button class="btn-secondary compact" onclick="shareResultWhatsApp()">🟢 WhatsApp</button>
       </div>
       <div class="app-banner app-banner--result">
         <img src="https://Aka625.b-cdn.net/Varios/bannersafebite%20.png" alt="SafeBite" class="app-banner-img" onerror="this.parentElement.style.display='none'"/>
@@ -294,6 +327,26 @@
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/><path d="M12 0C5.373 0 0 5.373 0 12c0 2.133.558 4.13 1.535 5.856L.057 23.928l6.243-1.635A11.934 11.934 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.792 9.792 0 01-5.045-1.396l-.361-.215-3.711.972.992-3.617-.235-.372A9.793 9.793 0 012.18 12C2.18 6.558 6.558 2.18 12 2.18S21.82 6.558 21.82 12 17.442 21.818 12 21.818z"/></svg>
         Consultar con experto (24h)
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SCREEN: PRODUCT DETAIL ══════════════════════════════════════════════ -->
+<div id="screenProduct" class="screen hidden">
+  <div class="app-wrap">
+    <header class="topbar">
+      <button class="topbar-btn" onclick="showScreen('screenHome')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <span class="topbar-title">Ficha de producto</span>
+      <div style="width:36px"></div>
+    </header>
+    <div class="form-wrap">
+      <div class="smart-list-card product-detail-card">
+        <h2 id="productTitle" class="section-title">Producto guardado</h2>
+        <p id="productMeta" class="form-sublabel"></p>
+        <div id="productBody"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -391,8 +444,24 @@
       <span class="topbar-title">Historial</span>
       <div style="width:36px"></div>
     </header>
-    <div class="form-wrap" id="historyList">
-      <p class="empty-state">Cargando historial...</p>
+    <div class="form-wrap">
+      <div class="smart-list-card">
+        <div class="smart-list-head">
+          <div>
+            <p class="coming-label">🕘 Historial avanzado</p>
+            <p class="smart-list-sub">Análisis guardados en Supabase por perfil</p>
+          </div>
+          <select id="historyFilter" onchange="loadHistory()">
+            <option value="all">Todos</option>
+            <option value="APTO">APTO</option>
+            <option value="PRECAUCION">PRECAUCIÓN</option>
+            <option value="NO APTO">NO APTO</option>
+            <option value="NO VERIFICABLE">NO VERIFICABLE</option>
+          </select>
+        </div>
+        <div id="historyList"><p class="empty-state">Cargando historial...</p></div>
+      </div>
+      <div id="historyDetail" class="result-detail"></div>
     </div>
   </div>
 </div>
@@ -513,6 +582,49 @@
           <button class="btn-primary small" onclick="saveAllergenRule()">Añadir regla</button>
         </div>
         <div id="adminRulesList" class="docs-list"></div>
+      </div>
+
+      <div class="admin-section">
+        <p class="form-label">🔁 Alternativas manuales</p>
+        <p class="form-sublabel">Sugerencias controladas desde admin. Se muestran junto al resultado cuando coinciden con el alérgeno o texto detectado.</p>
+        <div class="admin-form-card">
+          <div class="admin-grid-2">
+            <div class="field">
+              <label>Alérgeno</label>
+              <select id="altAllergen">
+                <option value="general">General</option>
+                <option value="leche">Leche</option>
+                <option value="gluten">Gluten</option>
+                <option value="huevo">Huevo</option>
+                <option value="soja">Soja</option>
+                <option value="frutos">Frutos secos</option>
+                <option value="cacahuete">Cacahuete</option>
+                <option value="pescado">Pescado</option>
+                <option value="crustaceos">Crustáceos</option>
+                <option value="altramuz">Altramuz</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Categoría</label>
+              <input id="altCategory" placeholder="Ej. embutidos, bollería, restaurante"/>
+            </div>
+          </div>
+          <div class="field">
+            <label>Texto disparador opcional</label>
+            <input id="altTrigger" placeholder="Ej. leche, caseinato, soja, trazas"/>
+          </div>
+          <div class="field">
+            <label>Sugerencia</label>
+            <textarea id="altSuggestion" rows="3" placeholder="Ej. Buscar versión sin leche y sin trazas, con etiqueta completa y proveedor certificado."></textarea>
+          </div>
+          <button class="btn-primary small" onclick="saveProductAlternative()">Añadir alternativa</button>
+        </div>
+        <div id="adminAlternativesList" class="docs-list"></div>
+      </div>
+
+      <div class="admin-section">
+        <p class="form-label">📦 Últimos productos guardados</p>
+        <div id="adminRecentProductsList"></div>
       </div>
 
       <div class="admin-section">

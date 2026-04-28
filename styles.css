@@ -1053,3 +1053,124 @@ button { cursor: pointer; }
 .next-step-item { border-color: rgba(148,163,184,.18); }
 .history-status.no-verificable { color: var(--muted); }
 .empty-state.compact { padding: 10px 0; font-size: 13px; }
+
+/* SafeBite V1.4 */
+.saved-product {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+.saved-product.saved-pending { border-color: rgba(245,158,11,.25); background: rgba(245,158,11,.06); }
+.history-clickable {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,.03);
+  cursor: pointer;
+  text-align: left;
+}
+.history-clickable:hover,
+.saved-product:hover {
+  border-color: rgba(126,217,87,.38);
+  transform: translateY(-1px);
+}
+.history-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.product-detail-card {
+  margin-top: 8px;
+}
+#validationIngredients {
+  width: 100%;
+  min-height: 120px;
+  margin: 10px 0;
+  resize: vertical;
+}
+#historyFilter {
+  max-width: 170px;
+  height: 40px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  padding: 0 10px;
+}
+
+
+/* V1.5 Barcode */
+.scan-btn-featured {
+  border-color: rgba(126,217,87,.34);
+  background: linear-gradient(135deg, rgba(126,217,87,.12), rgba(46,204,113,.05));
+}
+.barcode-input-area {
+  border-color: rgba(126,217,87,.18);
+}
+.barcode-title {
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.barcode-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+.barcode-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.text-field {
+  width: 100%;
+  background: rgba(2,6,23,.65);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--text);
+  padding: 13px 14px;
+  font-size: 16px;
+  outline: none;
+}
+.text-field:focus {
+  border-color: rgba(126,217,87,.55);
+  box-shadow: 0 0 0 3px rgba(126,217,87,.10);
+}
+.barcode-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.barcode-video-wrap {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #020617;
+}
+#barcodeVideo {
+  width: 100%;
+  display: block;
+  max-height: 260px;
+  object-fit: cover;
+}
+.input-preview-product {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.input-preview-product strong {
+  color: var(--text);
+  font-size: 15px;
+}
+.input-preview-product span,
+.input-preview-product small {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 520px) {
+  .barcode-row { grid-template-columns: 1fr; }
+}

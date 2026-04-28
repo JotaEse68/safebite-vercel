@@ -32,6 +32,11 @@ let state = {
   childDocs: [], // docs for the child being edited/created
   lastScanInput: null,
   lastResult: null,
+  lastHistoryId: null,
+  manualAlternatives: [],
+  barcodeStream: null,
+  barcodeTimer: null,
+  lastCatalogProduct: null,
 };
 
 // ── Init ───────────────────────────────────────────────────────────────────────
@@ -112,6 +117,13 @@ async function loadUserData() {
   state.children = children || [];
   if (state.children.length > 0 && !state.activeChild) state.activeChild = state.children[0];
 
+  const { data: alternatives } = await sb.from('product_alternatives')
+    .select('*')
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  state.manualAlternatives = alternatives || [];
+
   // Show admin button if admin
   if (state.user.email === ADMIN_EMAIL) {
     const topbar = document.querySelector('#screenHome .topbar-right');
@@ -152,7 +164,7 @@ function renderHome() {
     document.getElementById('heroAllergens').textContent = 'Toca + para crear un perfil';
   }
   // Sin límites durante beta — scansBar eliminado
-  renderSavedProducts();
+  renderSavedProducts().catch(e => console.warn('[SafeBite] renderSavedProducts:', e.message));
 }
 
 // ── Render profile ─────────────────────────────────────────────────────────────
@@ -344,7 +356,7 @@ async function loadAdminData() {
   document.getElementById('statScans').textContent = scansCount || 0;
   document.getElementById('statChildren').textContent = childrenCount || 0;
 
-  await Promise.all([loadKnowledgeDocuments(), loadAllergenRules(), loadRecentUsers()]);
+  await Promise.all([loadKnowledgeDocuments(), loadAllergenRules(), loadProductAlternatives(), loadRecentProducts(), loadRecentUsers()]);
 }
 
 async function loadKnowledgeDocuments() {
@@ -533,6 +545,50 @@ function renderAdminUsers(users) {
   });
 }
 
+async function loadProductAlternatives() {
+  const list = document.getElementById('adminAlternativesList');
+  if (!list) return;
+  const { data, error } = await sb.from('product_alternatives').select('*').order('created_at', { ascending: false }).limit(50);
+  if (error) { list.innerHTML = '<p class="empty-state compact">Aplica la migración SQL V1.4 para activar alternativas.</p>'; return; }
+  state.manualAlternatives = (data || []).filter(x => x.status === 'active');
+  list.innerHTML = (data || []).map(a => '<div class="doc-item rule-item"><span class="doc-item-icon">🔁</span><span class="doc-item-name"><strong>' + escapeHtml(a.allergen || 'general') + ' · ' + escapeHtml(a.category || 'alternativa') + '</strong><small>' + escapeHtml(a.suggestion || '') + '</small></span><button class="doc-item-del" onclick="toggleProductAlternative(\'' + a.id + '\', \'' + (a.status === 'active' ? 'archived' : 'active') + '\')">' + (a.status === 'active' ? 'Pausar' : 'Activar') + '</button><button class="doc-item-del" onclick="deleteProductAlternative(\'' + a.id + '\')">✕</button></div>').join('') || '<p class="empty-state compact">Todavía no hay alternativas manuales.</p>';
+}
+
+async function saveProductAlternative() {
+  if (state.user?.email !== ADMIN_EMAIL) return alert('Acceso no autorizado');
+  const allergen = document.getElementById('altAllergen').value;
+  const category = document.getElementById('altCategory').value.trim() || 'general';
+  const trigger_text = document.getElementById('altTrigger').value.trim();
+  const suggestion = document.getElementById('altSuggestion').value.trim();
+  if (!suggestion) return alert('Añade una sugerencia');
+  const { error } = await sb.from('product_alternatives').insert({ allergen, category, trigger_text, suggestion, status: 'active', created_by: state.user.id });
+  if (error) return alert('Error guardando alternativa. ¿Aplicaste la migración SQL V1.4? ' + error.message);
+  document.getElementById('altTrigger').value = '';
+  document.getElementById('altSuggestion').value = '';
+  await loadProductAlternatives();
+}
+
+async function toggleProductAlternative(id, status) {
+  const { error } = await sb.from('product_alternatives').update({ status }).eq('id', id);
+  if (error) return alert(error.message);
+  await loadProductAlternatives();
+}
+
+async function deleteProductAlternative(id) {
+  if (!confirm('¿Eliminar esta alternativa?')) return;
+  const { error } = await sb.from('product_alternatives').delete().eq('id', id);
+  if (error) return alert(error.message);
+  await loadProductAlternatives();
+}
+
+async function loadRecentProducts() {
+  const list = document.getElementById('adminRecentProductsList');
+  if (!list) return;
+  const { data, error } = await sb.from('saved_products').select('product_name,status,kind,created_at').order('created_at', { ascending: false }).limit(8);
+  if (error) { list.innerHTML = '<p class="empty-state compact">Sin productos guardados todavía.</p>'; return; }
+  list.innerHTML = (data || []).map(p => '<div class="admin-user-row"><span class="admin-user-email">' + escapeHtml(p.product_name) + '</span><span class="admin-user-plan">' + escapeHtml(p.kind) + '</span><span class="admin-user-scans">' + escapeHtml(p.status) + '</span></div>').join('') || '<p class="empty-state compact">Sin productos guardados todavía.</p>';
+}
+
 // Compatibilidad: función antigua para no romper botones previos si quedan cacheados.
 async function uploadAdminDoc() { return saveKnowledgeDocument(); }
 async function deleteAdminDoc(docId, path) { return deleteKnowledgeDocument(docId); }
@@ -579,6 +635,232 @@ async function handleFileInput(e) {
   e.target.value = '';
 }
 
+
+function showBarcodeInput() {
+  if (!state.activeChild) { alert('Primero añade el perfil de un hijo'); return; }
+  state.scanMode = 'barcode';
+  document.getElementById('barcodeInputArea')?.classList.toggle('hidden');
+  document.getElementById('textInputArea')?.classList.add('hidden');
+  document.getElementById('voiceUI')?.classList.add('hidden');
+  document.getElementById('barcodeInput')?.focus();
+}
+
+async function analyzeBarcodeFromInput() {
+  const code = document.getElementById('barcodeInput')?.value.trim().replace(/\D/g, '');
+  if (!code || code.length < 8) return alert('Introduce un código de barras válido');
+  await analyzeBarcode(code);
+}
+
+async function startBarcodeCamera() {
+  if (!state.activeChild) { alert('Primero añade el perfil de un hijo'); return; }
+  state.scanMode = 'barcode';
+  const area = document.getElementById('barcodeInputArea');
+  const videoWrap = document.getElementById('barcodeVideoWrap');
+  const video = document.getElementById('barcodeVideo');
+  if (area) area.classList.remove('hidden');
+
+  if (!('BarcodeDetector' in window)) {
+    document.getElementById('barcodeStatus').textContent = 'Tu navegador no permite escanear códigos automáticamente. Escribe el número del código de barras.';
+    document.getElementById('barcodeInput')?.focus();
+    return;
+  }
+
+  try {
+    stopBarcodeCamera();
+    state.barcodeStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = state.barcodeStream;
+    videoWrap?.classList.remove('hidden');
+    await video.play();
+
+    const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] });
+    document.getElementById('barcodeStatus').textContent = 'Apunta al código de barras. Si no lo detecta, escríbelo manualmente.';
+
+    state.barcodeTimer = setInterval(async () => {
+      try {
+        const codes = await detector.detect(video);
+        if (codes && codes.length) {
+          const code = String(codes[0].rawValue || '').replace(/\D/g, '');
+          if (code.length >= 8) {
+            stopBarcodeCamera();
+            document.getElementById('barcodeInput').value = code;
+            await analyzeBarcode(code);
+          }
+        }
+      } catch(e) {
+        console.warn('[SafeBite] barcode detect:', e.message);
+      }
+    }, 700);
+  } catch(e) {
+    document.getElementById('barcodeStatus').textContent = 'No pude abrir la cámara. Escribe el código manualmente.';
+    document.getElementById('barcodeInput')?.focus();
+  }
+}
+
+function stopBarcodeCamera() {
+  if (state.barcodeTimer) clearInterval(state.barcodeTimer);
+  state.barcodeTimer = null;
+  if (state.barcodeStream) {
+    state.barcodeStream.getTracks().forEach(t => t.stop());
+    state.barcodeStream = null;
+  }
+  const video = document.getElementById('barcodeVideo');
+  if (video) video.srcObject = null;
+  document.getElementById('barcodeVideoWrap')?.classList.add('hidden');
+}
+
+async function analyzeBarcode(barcode) {
+  showLoading('Buscando producto...', 'Consultando Open Food Facts');
+  try {
+    const product = await fetchOpenFoodFactsProduct(barcode);
+    const catalogId = await saveProductCatalog(product);
+
+    const inputMeta = {
+      type: 'Código de barras',
+      mode: 'barcode',
+      fileName: `${product.product_name || 'Producto'}${product.brand ? ' · ' + product.brand : ''}`,
+      productName: product.product_name || 'Producto sin nombre',
+      brand: product.brand || '',
+      barcode,
+      catalogProductId: catalogId,
+      source: 'Open Food Facts',
+      previewUrl: product.image_url || '',
+      textPreview: (product.ingredients_text || '').slice(0, 650),
+      createdAt: new Date().toISOString()
+    };
+
+    state.lastCatalogProduct = { ...product, id: catalogId };
+
+    if (!product.ingredients_text || product.ingredients_text.length < 5) {
+      hideLoading();
+      const result = buildNoIngredientsBarcodeResult(product, inputMeta);
+      result.input_preview = inputMeta;
+      state.lastScanInput = inputMeta;
+      showResult(result);
+      saveAnalysisHistory(result).then(id => {
+        state.lastHistoryId = id;
+        if (state.lastResult) state.lastResult.analysis_id = id;
+        saveProductRiskAssessment(result, id).catch(e => console.warn('[SafeBite] risk barcode:', e.message));
+      });
+      saveScan(result).catch(e => console.warn('[SafeBite] saveScan barcode:', e.message));
+      incrementScans().catch(e => console.warn('[SafeBite] increment barcode:', e.message));
+      return;
+    }
+
+    const textForAnalysis =
+      `FUENTE: Open Food Facts\n` +
+      `CÓDIGO DE BARRAS: ${barcode}\n` +
+      `PRODUCTO: ${product.product_name || 'Producto sin nombre'}\n` +
+      `MARCA: ${product.brand || 'No indicada'}\n` +
+      `CATEGORÍA: ${product.category || 'No indicada'}\n` +
+      `ALÉRGENOS DECLARADOS: ${(product.allergens_declared || []).join(', ') || 'No indicados'}\n` +
+      `TRAZAS DECLARADAS: ${(product.traces_declared || []).join(', ') || 'No indicadas'}\n` +
+      `INGREDIENTES:\n${product.ingredients_text}`;
+
+    hideLoading();
+    await analyze(textForAnalysis, 'text', inputMeta);
+  } catch(e) {
+    hideLoading();
+    document.getElementById('scanStatus').textContent = '⚠️ Código de barras: ' + e.message;
+  }
+}
+
+async function fetchOpenFoodFactsProduct(barcode) {
+  const fields = [
+    'code','product_name','product_name_es','brands','ingredients_text','ingredients_text_es',
+    'allergens','allergens_tags','traces','traces_tags','image_url','image_front_url','image_ingredients_url',
+    'categories','categories_tags','quantity','nutriscore_grade'
+  ].join(',');
+  const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(barcode)}.json?fields=${encodeURIComponent(fields)}`;
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!res.ok) throw new Error('No se pudo consultar Open Food Facts');
+  const json = await res.json();
+  if (!json || json.status !== 1 || !json.product) throw new Error('Producto no encontrado en Open Food Facts. Sube foto de etiqueta o pega ingredientes.');
+  const p = json.product || {};
+  const cleanTags = (arr) => Array.isArray(arr) ? arr.map(x => String(x).replace(/^..:/, '').replace(/-/g, ' ')).filter(Boolean) : [];
+  const splitText = (txt) => String(txt || '').split(',').map(x => x.trim()).filter(Boolean);
+  return {
+    barcode,
+    product_name: p.product_name_es || p.product_name || `Producto ${barcode}`,
+    brand: p.brands || '',
+    ingredients_text: p.ingredients_text_es || p.ingredients_text || '',
+    allergens_declared: [...new Set([...cleanTags(p.allergens_tags), ...splitText(p.allergens)])],
+    traces_declared: [...new Set([...cleanTags(p.traces_tags), ...splitText(p.traces)])],
+    image_url: p.image_ingredients_url || p.image_front_url || p.image_url || '',
+    category: p.categories || '',
+    quantity: p.quantity || '',
+    nutriscore: p.nutriscore_grade || '',
+    source_url: `https://world.openfoodfacts.org/product/${barcode}`
+  };
+}
+
+async function saveProductCatalog(product) {
+  try {
+    const payload = {
+      barcode: product.barcode,
+      product_name: product.product_name,
+      brand: product.brand || null,
+      ingredients_text: product.ingredients_text || null,
+      allergens_declared: product.allergens_declared || [],
+      traces_declared: product.traces_declared || [],
+      image_url: product.image_url || null,
+      category: product.category || null,
+      quantity: product.quantity || null,
+      nutriscore: product.nutriscore || null,
+      source: 'openfoodfacts',
+      source_url: product.source_url || null,
+      last_checked_at: new Date().toISOString()
+    };
+    const { data, error } = await sb.from('product_catalog').upsert(payload, { onConflict: 'barcode' }).select('id').single();
+    if (error) { console.warn('[SafeBite] product_catalog:', error.message); return null; }
+    return data?.id || null;
+  } catch(e) {
+    console.warn('[SafeBite] saveProductCatalog:', e.message);
+    return null;
+  }
+}
+
+function buildNoIngredientsBarcodeResult(product, inputMeta) {
+  return {
+    status: 'NO VERIFICABLE',
+    confidence: 'baja',
+    explanation: `Encontré el producto ${product.product_name || product.barcode} en Open Food Facts, pero no hay ingredientes suficientes para decidir con seguridad para ${state.activeChild?.name || 'este perfil'}. Sube una foto de la etiqueta o pega los ingredientes.`,
+    risks: ['Producto encontrado sin lista completa de ingredientes verificable'],
+    hidden_allergens: [],
+    traces_warning: false,
+    ingredients_found: '',
+    evidence: ['Open Food Facts no tiene ingredientes suficientes para este producto', 'Criterio SafeBite: sin ingredientes verificables → NO VERIFICABLE'],
+    expert_source: 'openfoodfacts',
+    expert_documents_used: []
+  };
+}
+
+async function saveProductRiskAssessment(result, analysisId = null) {
+  const input = result.input_preview || state.lastScanInput || {};
+  if (!input.catalogProductId) return;
+  try {
+    const { error } = await sb.from('product_risk_assessments').insert({
+      product_id: input.catalogProductId,
+      user_id: state.user.id,
+      child_id: state.activeChild?.id || null,
+      analysis_id: analysisId || result.analysis_id || state.lastHistoryId || null,
+      status: result.status || 'PRECAUCION',
+      confidence: result.confidence || null,
+      explanation: result.explanation || '',
+      risks: result.risks || [],
+      hidden_allergens: result.hidden_allergens || [],
+      ingredients_found: result.ingredients_found || '',
+      source: 'safebite'
+    });
+    if (error) console.warn('[SafeBite] product_risk_assessments:', error.message);
+  } catch(e) {
+    console.warn('[SafeBite] saveProductRiskAssessment:', e.message);
+  }
+}
+
+
 async function analyzeText() {
   const text = document.getElementById('manualText').value.trim();
   if (!text) return;
@@ -592,7 +874,7 @@ async function analyzeText() {
 }
 
 function modeLabel(mode) {
-  return ({ label: 'Etiqueta / producto', menu: 'Menú / carta', plate: 'Foto de plato', text: 'Texto manual', voice: 'Voz' })[mode] || 'Análisis';
+  return ({ label: 'Etiqueta / producto', menu: 'Menú / carta', plate: 'Foto de plato', barcode: 'Código de barras', text: 'Texto manual', voice: 'Voz' })[mode] || 'Análisis';
 }
 
 async function analyze(data, mode, inputMeta = null) {
@@ -662,6 +944,7 @@ async function analyze(data, mode, inputMeta = null) {
     result.input_preview = inputMeta;
     state.lastScanInput = inputMeta;
     showResult(result);
+    saveAnalysisHistory(result).then(id => { state.lastHistoryId = id; if (state.lastResult) state.lastResult.analysis_id = id; saveProductRiskAssessment(result, id).catch(e => console.warn('[SafeBite] saveProductRiskAssessment:', e.message)); }).catch(e => console.warn('[SafeBite] saveAnalysisHistory:', e.message));
     saveScan(result).catch(e => console.warn('[SafeBite] saveScan:', e.message));
     incrementScans().catch(e => console.warn('[SafeBite] incrementScans:', e.message));
 
@@ -692,14 +975,55 @@ async function incrementScans() {
 
 async function saveScan(result) {
   try {
-    const { error } = await sb.from('scans').insert({
+    await sb.from('scans').insert({
       user_id: state.user.id, child_id: state.activeChild?.id,
       result: `${result.input_preview?.type ? '[' + result.input_preview.type + '] ' : ''}${result.explanation || ''}`, status: result.status,
       ingredients: result.ingredients_found || '', risks: result.risks || [],
     });
-    if (error) console.warn('[SafeBite] saveScan error (no crítico):', error.message);
   } catch(e) {
     console.warn('[SafeBite] saveScan excepción (no crítico):', e.message);
+  }
+}
+
+async function saveAnalysisHistory(result) {
+  try {
+    const input = result.input_preview || state.lastScanInput || {};
+    const cleanInput = {
+      type: input.type || '',
+      mode: input.mode || '',
+      fileName: input.fileName || '',
+      mime: input.mime || '',
+      textPreview: input.textPreview || '',
+      createdAt: input.createdAt || new Date().toISOString(),
+      barcode: input.barcode || '',
+      productName: input.productName || '',
+      brand: input.brand || '',
+      catalogProductId: input.catalogProductId || null,
+      source: input.source || ''
+    };
+    const { data, error } = await sb.from('analysis_history').insert({
+      user_id: state.user.id,
+      child_id: state.activeChild?.id || null,
+      child_name: state.activeChild?.name || null,
+      input_type: cleanInput.type || modeLabel(cleanInput.mode),
+      input_name: cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
+      status: result.status || 'PRECAUCION',
+      confidence: result.confidence || null,
+      explanation: result.explanation || '',
+      risks: result.risks || [],
+      hidden_allergens: result.hidden_allergens || [],
+      ingredients_found: result.ingredients_found || '',
+      evidence: result.evidence || [],
+      expert_documents_used: result.expert_documents_used || [],
+      input_preview: cleanInput,
+      input_barcode: cleanInput.barcode || null,
+      catalog_product_id: cleanInput.catalogProductId || null
+    }).select('id').single();
+    if (error) { console.warn('[SafeBite] analysis_history:', error.message); return null; }
+    return data?.id || null;
+  } catch(e) {
+    console.warn('[SafeBite] saveAnalysisHistory excepción:', e.message);
+    return null;
   }
 }
 
@@ -724,6 +1048,7 @@ function showResult(result) {
   renderResultInputPreview(result.input_preview || state.lastScanInput, result.confidence);
   renderAlternatives(result);
   renderNextSteps(result);
+  renderValidationBlock(result);
 
   const rL = document.getElementById('risksList'); rL.innerHTML = '';
   if (result.risks?.length) { result.risks.forEach(r => { const c = document.createElement('span'); c.className = 'risk-chip'; c.textContent = r; rL.appendChild(c); }); document.getElementById('risksBlock').style.display = 'block'; }
@@ -759,11 +1084,12 @@ function renderResultInputPreview(input, confidence) {
   const date = input.createdAt ? new Date(input.createdAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
   const confValue = String(confidence || '').toLowerCase();
   const conf = confidence ? `<span class="confidence-chip confidence-${confValue}">Confianza ${escapeHtml(confidence)}</span>` : '';
-  const meta = `<div class="input-preview-meta"><strong>${escapeHtml(input.type || 'Entrada')}</strong><span>${escapeHtml(input.fileName || '')}</span><span>${date}</span>${conf}</div>`;
+  const productLine = input.productName ? `<div class="input-preview-product"><strong>${escapeHtml(input.productName)}</strong>${input.brand ? `<span>${escapeHtml(input.brand)}</span>` : ''}${input.barcode ? `<small>EAN: ${escapeHtml(input.barcode)}</small>` : ''}</div>` : '';
+  const meta = `<div class="input-preview-meta"><strong>${escapeHtml(input.type || 'Entrada')}</strong><span>${escapeHtml(input.fileName || '')}</span><span>${date}</span>${input.source ? `<span>${escapeHtml(input.source)}</span>` : ''}${conf}</div>`;
   const media = input.previewUrl
     ? `<img src="${input.previewUrl}" alt="Imagen analizada" class="input-preview-img"/>`
     : `<div class="input-preview-text">${escapeHtml(input.textPreview || 'Texto manual analizado')}</div>`;
-  box.innerHTML = `${media}${meta}`;
+  box.innerHTML = `${media}${productLine}${meta}`;
   block.style.display = 'block';
 }
 
@@ -787,7 +1113,15 @@ function renderAlternatives(result) {
   if (detected.includes('frutos') || detected.includes('cacahuete') || detected.includes('maní')) avoid.push('frutos secos/cacahuete: almendra, avellana, nuez, pistacho, maní');
   if (detected.includes('crust') || detected.includes('molusc') || detected.includes('pescado')) avoid.push('pescado, crustáceos o moluscos y trazas cruzadas');
 
+  const manual = (state.manualAlternatives || []).filter(a => {
+    const haystack = detected + ' ' + String(result.ingredients_found || '').toLowerCase();
+    const al = String(a.allergen || '').toLowerCase();
+    const trig = String(a.trigger_text || '').toLowerCase();
+    return al === 'general' || (al && haystack.includes(al)) || (trig && haystack.includes(trig));
+  }).slice(0, 4).map(a => 'Admin: ' + a.suggestion);
+
   const tips = [
+    ...manual,
     'Busca una opción con etiqueta completa y alérgenos destacados en negrita.',
     avoid.length ? 'Evita productos que indiquen: ' + avoid.slice(0, 3).join(' · ') : 'Elige una alternativa con lista de ingredientes clara y sin advertencias de trazas.',
     'Prioriza productos con mención explícita “sin” el alérgeno relevante y sin contaminación cruzada para perfil grave.',
@@ -833,69 +1167,159 @@ function renderNextSteps(result) {
   block.style.display = 'block';
 }
 
-function getSavedProducts() {
-  try { return JSON.parse(localStorage.getItem('safebite_saved_products_v1') || '[]'); }
-  catch(e) { return []; }
-}
-
-function setSavedProducts(items) {
-  localStorage.setItem('safebite_saved_products_v1', JSON.stringify(items.slice(0, 50)));
+async function getSavedProducts() {
+  if (!state.user) return [];
+  let q = sb.from('saved_products')
+    .select('*')
+    .eq('user_id', state.user.id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
+  const { data, error } = await q;
+  if (error) { console.warn('[SafeBite] getSavedProducts:', error.message); return []; }
+  return data || [];
 }
 
 function currentProductName(result = state.lastResult) {
   const input = result?.input_preview || state.lastScanInput || {};
-  const base = input.fileName || input.type || 'Producto analizado';
-  return String(base).replace(/\.(jpg|jpeg|png|webp|heic)$/i, '').replace(/^WhatsApp Image [^ ]+ at /i, 'Foto ');
+  const base = input.productName || input.fileName || input.type || result?.ingredients_found?.slice(0, 42) || 'Producto analizado';
+  return String(base).replace(/\.(jpg|jpeg|png|webp|heic|pdf)$/i, '').replace(/^WhatsApp Image [^ ]+ at /i, 'Foto ');
 }
 
-function saveCurrentProduct(kind) {
+async function saveCurrentProduct(kind) {
   if (!state.lastResult) return alert('No hay resultado para guardar');
-  const items = getSavedProducts();
-  const childId = state.activeChild?.id || 'general';
-  const item = {
-    id: Date.now(),
-    childId,
-    childName: state.activeChild?.name || 'Perfil',
+  const input = state.lastResult.input_preview || state.lastScanInput || {};
+  const productName = currentProductName();
+  const payload = {
+    user_id: state.user.id,
+    child_id: state.activeChild?.id || null,
+    analysis_id: state.lastResult.analysis_id || state.lastHistoryId || null,
     kind,
+    product_name: productName,
     status: state.lastResult.status || '—',
-    name: currentProductName(),
+    confidence: state.lastResult.confidence || null,
     explanation: state.lastResult.explanation || '',
-    date: new Date().toISOString()
+    ingredients_found: state.lastResult.ingredients_found || '',
+    risks: state.lastResult.risks || [],
+    hidden_allergens: state.lastResult.hidden_allergens || [],
+    input_type: input.type || modeLabel(input.mode),
+    input_name: input.fileName || productName,
+    barcode: input.barcode || null,
+    brand: input.brand || null,
+    catalog_product_id: input.catalogProductId || null
   };
-  setSavedProducts([item, ...items.filter(x => !(x.childId === childId && x.name === item.name))]);
-  renderSavedProducts();
-  alert(kind === 'safe' ? 'Guardado como producto seguro.' : 'Guardado como producto a evitar.');
+  const { error } = await sb.from('saved_products').insert(payload);
+  if (error) return alert('No se pudo guardar. ¿Aplicaste la migración V1.4? ' + error.message);
+  await renderSavedProducts();
+  alert(kind === 'safe' ? 'Guardado como producto seguro.' : kind === 'avoid' ? 'Guardado como producto a evitar.' : 'Guardado como pendiente de revisar.');
 }
 
-function renderSavedProducts() {
+async function renderSavedProducts() {
   const list = document.getElementById('savedProductsList');
   if (!list) return;
-  const childId = state.activeChild?.id || 'general';
-  const items = getSavedProducts().filter(x => x.childId === childId).slice(0, 6);
-  if (!items.length) {
+  const items = await getSavedProducts();
+  const visible = items.slice(0, 6);
+  if (!visible.length) {
     list.innerHTML = '<p class="empty-state compact">Todavía no hay productos guardados para este perfil.</p>';
     return;
   }
-  list.innerHTML = items.map(x => {
-    const icon = x.kind === 'safe' ? '⭐' : '🚫';
-    const cls = x.kind === 'safe' ? 'saved-safe' : 'saved-avoid';
-    const date = x.date ? new Date(x.date).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit' }) : '';
-    return '<div class="saved-product ' + cls + '"><span>' + icon + '</span><div><strong>' + escapeHtml(x.name) + '</strong><small>' + escapeHtml(x.status) + ' · ' + date + '</small></div></div>';
+  list.innerHTML = visible.map(x => {
+    const icon = x.kind === 'safe' ? '⭐' : x.kind === 'avoid' ? '🚫' : '🕒';
+    const cls = x.kind === 'safe' ? 'saved-safe' : x.kind === 'avoid' ? 'saved-avoid' : 'saved-pending';
+    const date = x.created_at ? new Date(x.created_at).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit' }) : '';
+    return '<button class="saved-product ' + cls + '" onclick="openSavedProduct(\'' + x.id + '\')"><span>' + icon + '</span><div><strong>' + escapeHtml(x.product_name) + '</strong><small>' + escapeHtml(x.status) + ' · ' + date + '</small></div></button>';
   }).join('');
 }
 
-function clearSavedProducts() {
+async function clearSavedProducts() {
   if (!confirm('¿Limpiar la lista rápida de este perfil?')) return;
-  const childId = state.activeChild?.id || 'general';
-  setSavedProducts(getSavedProducts().filter(x => x.childId !== childId));
-  renderSavedProducts();
+  let q = sb.from('saved_products').delete().eq('user_id', state.user.id);
+  if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
+  const { error } = await q;
+  if (error) return alert(error.message);
+  await renderSavedProducts();
+}
+
+async function openSavedProduct(id) {
+  const { data, error } = await sb.from('saved_products').select('*').eq('id', id).single();
+  if (error || !data) return alert('No se pudo abrir la ficha del producto');
+  renderProductDetail(data);
+  showScreen('screenProduct');
+}
+
+function renderProductDetail(item) {
+  const icon = item.kind === 'safe' ? '⭐' : item.kind === 'avoid' ? '🚫' : '🕒';
+  const title = document.getElementById('productTitle');
+  const meta = document.getElementById('productMeta');
+  const body = document.getElementById('productBody');
+  if (!title || !meta || !body) return;
+  title.textContent = icon + ' ' + (item.product_name || 'Producto guardado');
+  const date = item.created_at ? new Date(item.created_at).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+  body.dataset.currentProductId = item.id;
+  meta.textContent = (item.kind || 'guardado') + ' · ' + (item.status || '—') + ' · ' + date;
+  const barcodeInfo = (item.barcode || item.brand) ? '<div class="detail-block"><p class="detail-label">Producto</p><p class="ingredients-text">' + escapeHtml([item.brand, item.barcode ? 'EAN ' + item.barcode : ''].filter(Boolean).join(' · ')) + '</p></div>' : '';
+  body.innerHTML = barcodeInfo + '\n    <div class="detail-block"><p class="detail-label">Decisión</p><p class="ingredients-text">' + escapeHtml(item.explanation || 'Sin explicación guardada.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes guardados</p><p class="ingredients-text">' + escapeHtml(item.ingredients_found || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Riesgos</p><div>' + ((item.risks || []).map(r => '<span class="risk-chip">' + escapeHtml(r) + '</span>').join('') || '<p class="empty-state compact">Sin riesgos guardados.</p>') + '</div></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyCurrentProductDetail()">📋 Copiar ficha</button><button class="btn-secondary compact" onclick="deleteCurrentProductDetail()">🗑️ Eliminar</button></div>\n  ';
+}
+
+async function copyCurrentProductDetail() {
+  const id = document.getElementById('productBody')?.dataset.currentProductId;
+  if (!id) return;
+  const { data } = await sb.from('saved_products').select('*').eq('id', id).single();
+  if (!data) return;
+  const text = `SafeBite - Producto guardado\nProducto: ${data.product_name}\nEstado: ${data.status}\nTipo: ${data.kind}\n\n${data.explanation || ''}\n\nIngredientes: ${data.ingredients_found || '—'}\nRiesgos: ${(data.risks || []).join('; ') || '—'}`;
+  navigator.clipboard?.writeText(text).then(() => alert('Ficha copiada.')).catch(() => alert(text));
+}
+
+async function deleteCurrentProductDetail() {
+  const id = document.getElementById('productBody')?.dataset.currentProductId;
+  if (!id) return;
+  if (!confirm('¿Eliminar este producto guardado?')) return;
+  const { error } = await sb.from('saved_products').delete().eq('id', id);
+  if (error) return alert(error.message);
+  showScreen('screenHome');
+  await renderSavedProducts();
+}
+
+function buildResultSummary() {
+  if (!state.lastResult) return '';
+  const child = state.activeChild ? `${state.activeChild.emoji} ${state.activeChild.name}` : 'Perfil';
+  const input = state.lastResult.input_preview || state.lastScanInput || {};
+  const barcodeLine = input.barcode ? `\nCódigo de barras: ${input.barcode}` : '';
+  return `SafeBite - Resultado\nPerfil: ${child}\nProducto/entrada: ${currentProductName()}${barcodeLine}\nEstado: ${state.lastResult.status}\nConfianza: ${state.lastResult.confidence || '—'}\n\nDecisión:\n${state.lastResult.explanation || ''}\n\nRiesgos:\n${(state.lastResult.risks || []).join('; ') || 'No especificados'}\n\nAlérgenos ocultos:\n${(state.lastResult.hidden_allergens || []).join('; ') || 'No detectados'}\n\nIngredientes detectados:\n${state.lastResult.ingredients_found || '—'}`;
 }
 
 function copyResultSummary() {
-  if (!state.lastResult) return;
-  const child = state.activeChild ? `${state.activeChild.emoji} ${state.activeChild.name}` : 'Perfil';
-  const text = `SafeBite - Resultado\nPerfil: ${child}\nEstado: ${state.lastResult.status}\nConfianza: ${state.lastResult.confidence || '—'}\nEntrada: ${currentProductName()}\n\n${state.lastResult.explanation || ''}\n\nRiesgos: ${(state.lastResult.risks || []).join('; ') || 'No especificados'}\nIngredientes detectados: ${state.lastResult.ingredients_found || '—'}`;
+  const text = buildResultSummary();
+  if (!text) return;
   navigator.clipboard?.writeText(text).then(() => alert('Resumen copiado.')).catch(() => alert(text));
+}
+
+function shareResultWhatsApp() {
+  const text = buildResultSummary();
+  if (!text) return;
+  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+}
+
+function renderValidationBlock(result) {
+  const block = document.getElementById('validationBlock');
+  const textarea = document.getElementById('validationIngredients');
+  if (!block || !textarea) return;
+  const needsValidation = ['PRECAUCION', 'NO VERIFICABLE'].includes(result.status) || String(result.confidence || '').toLowerCase() === 'baja';
+  if (!needsValidation) { block.style.display = 'none'; return; }
+  textarea.value = result.ingredients_found || '';
+  block.style.display = 'block';
+}
+
+async function reanalyzeValidatedIngredients() {
+  const text = document.getElementById('validationIngredients')?.value.trim();
+  if (!text) return alert('Añade o confirma ingredientes antes de reanalizar');
+  await analyze(text, 'text', {
+    type: 'Texto corregido / validado',
+    mode: 'text',
+    fileName: 'Ingredientes validados por usuario',
+    textPreview: text.slice(0, 650),
+    createdAt: new Date().toISOString()
+  });
 }
 
 function editLastAnalysisText() {
@@ -908,8 +1332,10 @@ function editLastAnalysisText() {
 }
 
 function resetScan() {
+  stopBarcodeCamera();
   document.getElementById('manualText').value = '';
   document.getElementById('textInputArea').classList.add('hidden');
+  document.getElementById('barcodeInputArea')?.classList.add('hidden');
   document.getElementById('scanStatus').textContent = '';
   showScreen('screenHome');
 }
@@ -996,19 +1422,67 @@ function contactExpert() {
 // ── History ────────────────────────────────────────────────────────────────────
 async function loadHistory() {
   const list = document.getElementById('historyList');
+  const filter = document.getElementById('historyFilter')?.value || 'all';
   list.innerHTML = '<p class="empty-state">Cargando...</p>';
-  const { data: scans } = await sb.from('scans').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(20);
-  if (!scans?.length) { list.innerHTML = '<p class="empty-state">No hay escaneos todavía.<br/>¡Escanea tu primer producto!</p>'; return; }
+  let q = sb.from('analysis_history').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(40);
+  if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
+  if (filter !== 'all') q = q.eq('status', filter);
+  const { data: scans, error } = await q;
+  if (error) {
+    list.innerHTML = '<p class="empty-state">Aplica la migración V1.4 para activar el historial avanzado.</p>';
+    return;
+  }
+  if (!scans?.length) { list.innerHTML = '<p class="empty-state">No hay análisis todavía para este filtro.</p>'; return; }
   list.innerHTML = '';
   scans.forEach(scan => {
     const icon = scan.status === 'APTO' ? '🟢' : scan.status === 'PRECAUCION' ? '🟡' : scan.status === 'NO VERIFICABLE' ? '⚪' : '🔴';
     const cls  = scan.status === 'APTO' ? 'apto' : scan.status === 'PRECAUCION' ? 'precaucion' : scan.status === 'NO VERIFICABLE' ? 'no-verificable' : 'no-apto';
     const date = new Date(scan.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
-    const item = document.createElement('div');
-    item.className = 'history-item';
-    item.innerHTML = `<span class="history-icon">${icon}</span><div style="flex:1;min-width:0"><p class="history-status ${cls}">${scan.status}</p><p class="history-explanation">${scan.result||'—'}</p></div><span class="history-date">${date}</span>`;
+    const item = document.createElement('button');
+    item.className = 'history-item history-clickable';
+    item.onclick = () => renderHistoryDetail(scan);
+    item.innerHTML = '<span class="history-icon">' + icon + '</span><div style="flex:1;min-width:0"><p class="history-status ' + cls + '">' + escapeHtml(scan.status) + '</p><p class="history-explanation">' + escapeHtml(scan.input_name || scan.explanation || 'Análisis SafeBite') + '</p><p class="history-meta">' + escapeHtml(scan.input_type || '') + ' · ' + escapeHtml(scan.confidence || '') + '</p></div><span class="history-date">' + date + '</span>';
     list.appendChild(item);
   });
+}
+
+function renderHistoryDetail(scan) {
+  const detail = document.getElementById('historyDetail');
+  if (!detail) return;
+  detail.innerHTML = '\n    <div class="detail-block"><p class="detail-label">Análisis seleccionado</p><p class="ingredients-text"><strong>' + escapeHtml(scan.status) + '</strong> · ' + escapeHtml(scan.input_name || '') + '</p><p class="ingredients-text">' + escapeHtml(scan.explanation || '') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes</p><p class="ingredients-text">' + escapeHtml(scan.ingredients_found || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyHistoryDetail(\'' + scan.id + '\')">📋 Copiar</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'safe\')">⭐ Seguro</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'avoid\')">🚫 Evitar</button></div>\n  ';
+}
+
+async function copyHistoryDetail(id) {
+  const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
+  if (!data) return;
+  const text = `SafeBite - Historial\nEntrada: ${data.input_name}\nEstado: ${data.status}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || ''}\n\nIngredientes: ${data.ingredients_found || '—'}`;
+  navigator.clipboard?.writeText(text).then(() => alert('Análisis copiado.')).catch(() => alert(text));
+}
+
+async function saveHistoryAsProduct(id, kind) {
+  const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
+  if (!data) return;
+  const payload = {
+    user_id: data.user_id,
+    child_id: data.child_id,
+    analysis_id: data.id,
+    kind,
+    product_name: data.input_name || 'Producto del historial',
+    status: data.status,
+    confidence: data.confidence,
+    explanation: data.explanation,
+    ingredients_found: data.ingredients_found,
+    risks: data.risks || [],
+    hidden_allergens: data.hidden_allergens || [],
+    input_type: data.input_type,
+    input_name: data.input_name,
+    barcode: data.input_barcode || null,
+    catalog_product_id: data.catalog_product_id || null
+  };
+  const { error } = await sb.from('saved_products').insert(payload);
+  if (error) return alert(error.message);
+  alert('Guardado en lista rápida.');
+  renderSavedProducts().catch(()=>{});
 }
 
 // ── Screen routing ─────────────────────────────────────────────────────────────
