@@ -332,7 +332,8 @@ async function saveChild() {
 
 // ── Admin ──────────────────────────────────────────────────────────────────────
 async function loadAdminData() {
-  // Stats
+  if (state.user?.email !== ADMIN_EMAIL) return;
+
   const { count: usersCount } = await sb.from('profiles').select('*', { count: 'exact', head: true });
   const { count: scansCount } = await sb.from('scans').select('*', { count: 'exact', head: true });
   const { count: childrenCount } = await sb.from('children').select('*', { count: 'exact', head: true });
@@ -340,28 +341,179 @@ async function loadAdminData() {
   document.getElementById('statScans').textContent = scansCount || 0;
   document.getElementById('statChildren').textContent = childrenCount || 0;
 
-  // Admin docs (Laztan knowledge base)
-  const { data: docs } = await sb.from('documents').select('*').eq('type', 'admin').order('created_at', { ascending: false });
-  renderAdminDocs(docs || []);
+  await Promise.all([loadKnowledgeDocuments(), loadAllergenRules(), loadRecentUsers()]);
+}
 
-  // Recent users
-  const { data: users } = await sb.from('profiles').select('id, name, plan, scans_this_month').order('created_at', { ascending: false }).limit(10);
-  renderAdminUsers(users || []);
+async function loadKnowledgeDocuments() {
+  let docs = [];
+  const { data, error } = await sb.from('knowledge_documents')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(30);
+
+  if (!error && data) {
+    docs = data;
+  } else {
+    // Compatibilidad con tabla antigua "documents" si la migración aún no está aplicada.
+    const old = await sb.from('documents').select('*').eq('type', 'admin').order('created_at', { ascending: false }).limit(30);
+    docs = (old.data || []).map(d => ({ ...d, title: d.name, document_type: 'archivo', status: 'active', legacy: true }));
+  }
+  renderAdminDocs(docs);
 }
 
 function renderAdminDocs(docs) {
   const list = document.getElementById('adminDocsList');
+  if (!list) return;
   list.innerHTML = '';
+  if (!docs.length) {
+    list.innerHTML = '<p class="empty-state compact">Todavía no hay documentación experta cargada.</p>';
+    return;
+  }
   docs.forEach(doc => {
     const item = document.createElement('div');
-    item.className = 'doc-item';
+    item.className = 'doc-item knowledge-item';
+    const title = escapeHtml(doc.title || doc.name || 'Documento sin título');
+    const cat = escapeHtml(doc.category || 'general');
+    const status = doc.status || 'active';
     item.innerHTML = `
       <span class="doc-item-icon">📖</span>
-      <span class="doc-item-name">${doc.name}</span>
-      <span class="doc-item-size">${formatBytes(doc.size || 0)}</span>
-      <button class="doc-item-del" onclick="deleteAdminDoc('${doc.id}', '${doc.path}')" title="Eliminar">✕</button>`;
+      <span class="doc-item-name"><strong>${title}</strong><small>${cat} · ${doc.document_type || 'documento'} · ${status === 'active' ? 'activo' : 'inactivo'}</small></span>
+      ${doc.legacy ? '' : `<button class="doc-item-del" onclick="toggleKnowledgeDocument('${doc.id}', '${status === 'active' ? 'archived' : 'active'}')" title="Activar/desactivar">${status === 'active' ? 'Pausar' : 'Activar'}</button>`}
+      ${doc.legacy ? '' : `<button class="doc-item-del" onclick="deleteKnowledgeDocument('${doc.id}')" title="Eliminar">✕</button>`}`;
     list.appendChild(item);
   });
+}
+
+async function saveKnowledgeDocument() {
+  if (state.user?.email !== ADMIN_EMAIL) return alert('Acceso no autorizado');
+  const title = document.getElementById('knowledgeTitle').value.trim();
+  const category = document.getElementById('knowledgeCategory').value;
+  const document_type = document.getElementById('knowledgeType').value;
+  let content_text = document.getElementById('knowledgeContent').value.trim();
+  const file = document.getElementById('knowledgeFile').files[0];
+
+  if (!title) return alert('Añade un título');
+  if (!content_text && !file) return alert('Pega texto experto o adjunta un archivo');
+
+  let file_path = null, file_name = null, file_size = null;
+
+  if (file) {
+    file_name = file.name;
+    file_size = file.size;
+
+    if (file.name.toLowerCase().endsWith('.txt') && !content_text) {
+      content_text = await file.text();
+    }
+
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      file_path = `admin/${Date.now()}_${safeName}`;
+      const { error: upErr } = await sb.storage.from('expert-documents').upload(file_path, file, { upsert: false });
+      if (upErr) console.warn('[SafeBite] Archivo no subido, se guarda texto igualmente:', upErr.message);
+    } catch(e) {
+      console.warn('[SafeBite] Storage no disponible:', e.message);
+    }
+  }
+
+  const { error } = await sb.from('knowledge_documents').insert({
+    title, category, document_type, content_text,
+    file_path, file_name, file_size,
+    status: 'active', priority: 10, uploaded_by: state.user.id
+  });
+  if (error) return alert('Error guardando documento. ¿Aplicaste la migración SQL V1.1? ' + error.message);
+
+  document.getElementById('knowledgeTitle').value = '';
+  document.getElementById('knowledgeContent').value = '';
+  document.getElementById('knowledgeFile').value = '';
+  await loadKnowledgeDocuments();
+}
+
+async function toggleKnowledgeDocument(id, status) {
+  const { error } = await sb.from('knowledge_documents').update({ status }).eq('id', id);
+  if (error) return alert(error.message);
+  await loadKnowledgeDocuments();
+}
+
+async function deleteKnowledgeDocument(id) {
+  if (!confirm('¿Eliminar este documento de la base experta?')) return;
+  const { error } = await sb.from('knowledge_documents').delete().eq('id', id);
+  if (error) return alert(error.message);
+  await loadKnowledgeDocuments();
+}
+
+async function loadAllergenRules() {
+  const list = document.getElementById('adminRulesList');
+  if (!list) return;
+  const { data, error } = await sb.from('allergen_rules')
+    .select('*')
+    .order('allergen', { ascending: true })
+    .order('ingredient_name', { ascending: true });
+  if (error) {
+    list.innerHTML = '<p class="empty-state compact">Aplica la migración SQL V1.1 para activar reglas editables.</p>';
+    return;
+  }
+  renderAllergenRules(data || []);
+}
+
+function renderAllergenRules(rules) {
+  const list = document.getElementById('adminRulesList');
+  list.innerHTML = '';
+  if (!rules.length) {
+    list.innerHTML = '<p class="empty-state compact">No hay reglas todavía.</p>';
+    return;
+  }
+  rules.forEach(rule => {
+    const item = document.createElement('div');
+    item.className = 'doc-item rule-item';
+    const aliases = Array.isArray(rule.aliases) ? rule.aliases.join(', ') : (rule.aliases || '');
+    item.innerHTML = `
+      <span class="doc-item-icon">🧬</span>
+      <span class="doc-item-name"><strong>${escapeHtml(rule.ingredient_name)} → ${escapeHtml(rule.allergen)}</strong><small>${escapeHtml(rule.risk_level || 'riesgo')} · ${escapeHtml(aliases || 'sin alias')}</small></span>
+      <button class="doc-item-del" onclick="toggleAllergenRule('${rule.id}', '${rule.status === 'active' ? 'archived' : 'active'}')">${rule.status === 'active' ? 'Pausar' : 'Activar'}</button>
+      <button class="doc-item-del" onclick="deleteAllergenRule('${rule.id}')">✕</button>`;
+    list.appendChild(item);
+  });
+}
+
+async function saveAllergenRule() {
+  if (state.user?.email !== ADMIN_EMAIL) return alert('Acceso no autorizado');
+  const ingredient_name = document.getElementById('ruleIngredient').value.trim();
+  const allergen = document.getElementById('ruleAllergen').value;
+  const aliasesRaw = document.getElementById('ruleAliases').value.trim();
+  const risk_level = document.getElementById('ruleRisk').value;
+  const explanation = document.getElementById('ruleExplanation').value.trim();
+
+  if (!ingredient_name || !allergen) return alert('Ingrediente y alérgeno son obligatorios');
+  const aliases = aliasesRaw ? aliasesRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  const { error } = await sb.from('allergen_rules').insert({
+    ingredient_name, allergen, aliases, risk_level,
+    explanation, status: 'active', created_by: state.user.id
+  });
+  if (error) return alert('Error guardando regla. ¿Aplicaste la migración SQL V1.1? ' + error.message);
+
+  document.getElementById('ruleIngredient').value = '';
+  document.getElementById('ruleAliases').value = '';
+  document.getElementById('ruleExplanation').value = '';
+  await loadAllergenRules();
+}
+
+async function toggleAllergenRule(id, status) {
+  const { error } = await sb.from('allergen_rules').update({ status }).eq('id', id);
+  if (error) return alert(error.message);
+  await loadAllergenRules();
+}
+
+async function deleteAllergenRule(id) {
+  if (!confirm('¿Eliminar esta regla?')) return;
+  const { error } = await sb.from('allergen_rules').delete().eq('id', id);
+  if (error) return alert(error.message);
+  await loadAllergenRules();
+}
+
+async function loadRecentUsers() {
+  const { data: users } = await sb.from('profiles').select('id, name, plan, scans_this_month').order('created_at', { ascending: false }).limit(10);
+  renderAdminUsers(users || []);
 }
 
 function renderAdminUsers(users) {
@@ -371,42 +523,16 @@ function renderAdminUsers(users) {
     const row = document.createElement('div');
     row.className = 'admin-user-row';
     row.innerHTML = `
-      <span class="admin-user-email">${u.name || 'Usuario'}</span>
-      <span class="admin-user-plan">${(u.plan || 'free').toUpperCase()}</span>
+      <span class="admin-user-email">${escapeHtml(u.name || 'Usuario')}</span>
+      <span class="admin-user-plan">${escapeHtml((u.plan || 'free').toUpperCase())}</span>
       <span class="admin-user-scans">${u.scans_this_month || 0} escaneos</span>`;
     list.appendChild(row);
   });
 }
 
-async function uploadAdminDoc() {
-  const input = document.getElementById('adminDocInput');
-  const files = Array.from(input.files);
-  const list = document.getElementById('adminDocsList');
-
-  for (const file of files) {
-    const uploading = document.createElement('p');
-    uploading.className = 'doc-uploading'; uploading.textContent = `Subiendo ${file.name}...`;
-    list.prepend(uploading);
-
-    const path = `admin/${Date.now()}_${file.name}`;
-    const { error: upErr } = await sb.storage.from('documents').upload(path, file);
-    list.removeChild(uploading);
-    if (upErr) { alert('Error: ' + upErr.message); continue; }
-
-    await sb.from('documents').insert({
-      user_id: state.user.id, name: file.name, path, size: file.size, type: 'admin'
-    });
-  }
-  input.value = '';
-  await loadAdminData();
-}
-
-async function deleteAdminDoc(docId, path) {
-  if (!confirm('¿Eliminar este protocolo?')) return;
-  await sb.storage.from('documents').remove([path]);
-  await sb.from('documents').delete().eq('id', docId);
-  await loadAdminData();
-}
+// Compatibilidad: función antigua para no romper botones previos si quedan cacheados.
+async function uploadAdminDoc() { return saveKnowledgeDocument(); }
+async function deleteAdminDoc(docId, path) { return deleteKnowledgeDocument(docId); }
 
 // ── Scan ───────────────────────────────────────────────────────────────────────
 function triggerCamera(mode) {
@@ -574,6 +700,16 @@ function showResult(result) {
   if (result.hidden_allergens?.length) { result.hidden_allergens.forEach(h => { const c = document.createElement('span'); c.className = 'hidden-chip'; c.textContent = h; hL.appendChild(c); }); document.getElementById('hiddenBlock').style.display = 'block'; }
   else document.getElementById('hiddenBlock').style.display = 'none';
 
+  const eL = document.getElementById('evidenceList');
+  if (eL) {
+    eL.innerHTML = '';
+    const evidence = [...(result.evidence || []), ...(result.expert_documents_used || []).map(d => `Documento activo: ${d}`)];
+    if (evidence.length) {
+      evidence.slice(0, 6).forEach(e => { const c = document.createElement('div'); c.className = 'evidence-item'; c.textContent = e; eL.appendChild(c); });
+      document.getElementById('evidenceBlock').style.display = 'block';
+    } else document.getElementById('evidenceBlock').style.display = 'none';
+  }
+
   if (result.ingredients_found) { document.getElementById('ingredientsFound').textContent = result.ingredients_found; document.getElementById('ingredientsBlock').style.display = 'block'; }
   else document.getElementById('ingredientsBlock').style.display = 'none';
 
@@ -706,7 +842,12 @@ function hideLoading() { const o = document.getElementById('loadingOverlay'); if
 function toDataUrl(file) {
   return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(new Error('No se pudo leer')); r.readAsDataURL(file); });
 }
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
+}
+
 function formatBytes(bytes) {
+  if (!bytes && bytes !== 0) return '';
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
   return (bytes/1024/1024).toFixed(1) + ' MB';

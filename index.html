@@ -263,6 +263,10 @@
           <p class="detail-label">Alérgenos ocultos detectados</p>
           <div id="hiddenList"></div>
         </div>
+        <div class="detail-block" id="evidenceBlock">
+          <p class="detail-label">Base aplicada</p>
+          <div id="evidenceList"></div>
+        </div>
         <div class="detail-block" id="ingredientsBlock">
           <p class="detail-label">Ingredientes analizados</p>
           <p id="ingredientsFound" class="ingredients-text"></p>
@@ -401,13 +405,104 @@
       </div>
 
       <div class="admin-section">
-        <p class="form-label">📖 Base de conocimiento Laztan</p>
-        <p class="form-sublabel">Protocolos de alérgenos, equivalencias, normativa. La IA los usa en cada análisis.</p>
+        <p class="form-label">📖 Base Experta Laztan</p>
+        <p class="form-sublabel">Documentación interna no visible para usuarios. Se usa como contexto experto en cada análisis.</p>
+
+        <div class="admin-form-card">
+          <div class="field">
+            <label>Título del documento</label>
+            <input type="text" id="knowledgeTitle" placeholder="Ej. Derivados ocultos de la leche"/>
+          </div>
+          <div class="admin-grid-2">
+            <div class="field">
+              <label>Categoría</label>
+              <select id="knowledgeCategory">
+                <option value="general">General</option>
+                <option value="leche">Leche</option>
+                <option value="huevo">Huevo</option>
+                <option value="gluten">Gluten</option>
+                <option value="frutos">Frutos secos</option>
+                <option value="trazas">Trazas / contaminación cruzada</option>
+                <option value="normativa">Normativa</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Tipo</label>
+              <select id="knowledgeType">
+                <option value="protocolo">Protocolo</option>
+                <option value="equivalencias">Equivalencias</option>
+                <option value="normativa">Normativa</option>
+                <option value="guia">Guía interna</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Texto experto / resumen operativo</label>
+            <textarea id="knowledgeContent" rows="5" placeholder="Pega aquí el contenido útil para la IA: reglas, criterios, derivados, explicaciones..."></textarea>
+          </div>
+          <div class="admin-actions-row">
+            <label class="btn-upload small">
+              <input type="file" id="knowledgeFile" accept=".txt,.pdf,.doc,.docx" hidden/>
+              Adjuntar archivo
+            </label>
+            <button class="btn-primary small" onclick="saveKnowledgeDocument()">Guardar documento</button>
+          </div>
+          <p class="form-sublabel">Para PDF/DOCX: adjunta el archivo y pega un resumen operativo en texto. La extracción automática queda para la siguiente fase.</p>
+        </div>
+
         <div id="adminDocsList" class="docs-list"></div>
-        <label class="btn-upload">
-          <input type="file" id="adminDocInput" accept=".pdf" multiple hidden onchange="uploadAdminDoc()"/>
-          + Subir protocolo PDF
-        </label>
+      </div>
+
+      <div class="admin-section">
+        <p class="form-label">🧬 Reglas de alérgenos y derivados</p>
+        <p class="form-sublabel">Estas reglas mandan sobre la IA. Ejemplo: caseinato sódico → leche → riesgo alto.</p>
+        <div class="admin-form-card">
+          <div class="admin-grid-2">
+            <div class="field">
+              <label>Ingrediente / derivado</label>
+              <input type="text" id="ruleIngredient" placeholder="caseinato sódico"/>
+            </div>
+            <div class="field">
+              <label>Alérgeno real</label>
+              <select id="ruleAllergen">
+                <option value="leche">Leche</option>
+                <option value="huevo">Huevo</option>
+                <option value="gluten">Gluten</option>
+                <option value="frutos">Frutos secos</option>
+                <option value="cacahuete">Cacahuete</option>
+                <option value="soja">Soja</option>
+                <option value="pescado">Pescado</option>
+                <option value="crustaceos">Crustáceos</option>
+                <option value="moluscos">Moluscos</option>
+                <option value="sesamo">Sésamo</option>
+                <option value="mostaza">Mostaza</option>
+                <option value="apio">Apio</option>
+                <option value="sulfitos">Sulfitos</option>
+                <option value="altramuz">Altramuz</option>
+              </select>
+            </div>
+          </div>
+          <div class="admin-grid-2">
+            <div class="field">
+              <label>Alias separados por coma</label>
+              <input type="text" id="ruleAliases" placeholder="caseína, proteína láctea, lactosuero"/>
+            </div>
+            <div class="field">
+              <label>Riesgo</label>
+              <select id="ruleRisk">
+                <option value="alto">Alto</option>
+                <option value="medio">Medio</option>
+                <option value="bajo">Bajo</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Explicación para padres</label>
+            <input type="text" id="ruleExplanation" placeholder="Derivado proteico de la leche."/>
+          </div>
+          <button class="btn-primary small" onclick="saveAllergenRule()">Añadir regla</button>
+        </div>
+        <div id="adminRulesList" class="docs-list"></div>
       </div>
 
       <div class="admin-section">

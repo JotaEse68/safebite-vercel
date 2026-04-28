@@ -839,3 +839,81 @@ button { cursor: pointer; }
 /* ── Scans bar (legacy, oculto) ────────────────────────────────────────────── */
 .scans-bar { display: none; }
 .plan-badge { font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 6px; background: var(--green-dim); color: var(--green); letter-spacing: .06em; }
+
+/* ── SafeBite V1.1 Admin Expert Base ─────────────────────────────────────── */
+.admin-form-card {
+  background: rgba(255,255,255,.035);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  margin: 10px 0 14px;
+}
+.admin-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.admin-form-card textarea,
+.admin-form-card select {
+  width: 100%;
+  background: rgba(2,6,23,.75);
+  border: 1px solid var(--border2);
+  border-radius: 12px;
+  color: var(--text);
+  font: inherit;
+  padding: 12px 14px;
+  outline: none;
+}
+.admin-form-card textarea:focus,
+.admin-form-card select:focus {
+  border-color: rgba(126,217,87,.45);
+  box-shadow: 0 0 0 3px rgba(126,217,87,.08);
+}
+.admin-actions-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.btn-primary.small,
+.btn-upload.small {
+  min-height: 42px;
+  padding: 10px 14px;
+  font-size: 13px;
+  border-radius: 12px;
+}
+.empty-state.compact {
+  padding: 12px;
+  font-size: 13px;
+}
+.knowledge-item .doc-item-name,
+.rule-item .doc-item-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.knowledge-item .doc-item-name small,
+.rule-item .doc-item-name small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.evidence-item {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text2);
+  background: rgba(126,217,87,.08);
+  border: 1px solid rgba(126,217,87,.16);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 6px 0;
+}
+@media (max-width: 380px) {
+  .admin-grid-2 { grid-template-columns: 1fr; }
+  .admin-actions-row { flex-direction: column; align-items: stretch; }
+}
