@@ -30,6 +30,7 @@ let state = {
   scanMode: 'label', selectedEmoji: '👦', selectedAllergens: [],
   pendingAllergenId: null, editingChildId: null, recognition: null,
   childDocs: [], // docs for the child being edited/created
+  lastScanInput: null,
 };
 
 // ── Init ───────────────────────────────────────────────────────────────────────
@@ -51,11 +52,11 @@ let state = {
   renderAllergenGrid();
   document.getElementById('fileInput').addEventListener('change', handleFileInput);
   document.getElementById('fileInputGallery').addEventListener('change', handleFileInput);
-  // Inyectar estilos del banner
+  // Ajuste del banner: mostrar completo, sin recortes, también en móvil.
   const bannerStyle = document.createElement('style');
   bannerStyle.textContent = `
     .app-banner { width:100%; padding:8px 16px 0; box-sizing:border-box; }
-    .app-banner-img { width:100%; height:auto; border-radius:12px; display:block; object-fit:cover; max-height:90px; }
+    .app-banner-img { width:100%; height:auto; border-radius:16px; display:block; object-fit:contain; object-position:center; max-height:none; background:#06111f; }
     .app-banner--result { padding:16px 16px 0; }
   `;
   document.head.appendChild(bannerStyle);
@@ -558,8 +559,17 @@ async function handleFileInput(e) {
   showLoading('Procesando imagen...', 'Comprimiendo para análisis');
   try {
     const dataUrl = await compressImageFromFile(file);
+    const previewUrl = await toDataUrl(file);
+    const meta = {
+      type: modeLabel(state.scanMode),
+      mode: state.scanMode,
+      fileName: file.name || 'foto',
+      mime: file.type || 'image/jpeg',
+      previewUrl,
+      createdAt: new Date().toISOString()
+    };
     hideLoading();
-    await analyze(dataUrl, state.scanMode);
+    await analyze(dataUrl, state.scanMode, meta);
   } catch(err) {
     hideLoading();
     document.getElementById('scanStatus').textContent = '⚠️ Error al procesar imagen: ' + err.message;
@@ -570,12 +580,22 @@ async function handleFileInput(e) {
 async function analyzeText() {
   const text = document.getElementById('manualText').value.trim();
   if (!text) return;
-  await analyze(text, 'text');
+  await analyze(text, 'text', {
+    type: 'Texto manual',
+    mode: 'text',
+    fileName: 'Ingredientes escritos',
+    textPreview: text.slice(0, 650),
+    createdAt: new Date().toISOString()
+  });
 }
 
-async function analyze(data, mode) {
+function modeLabel(mode) {
+  return ({ label: 'Etiqueta / producto', menu: 'Menú / carta', plate: 'Foto de plato', text: 'Texto manual', voice: 'Voz' })[mode] || 'Análisis';
+}
+
+async function analyze(data, mode, inputMeta = null) {
   if (!checkScanLimit()) return;
-  showLoading(mode === 'menu' ? 'Analizando menú...' : 'Analizando ingredientes...', 'IA con protocolos Laztan');
+  showLoading(mode === 'menu' ? 'Analizando menú...' : mode === 'plate' ? 'Revisando foto de plato...' : 'Analizando ingredientes...', 'IA con protocolos Laztan');
 
   const setStatus = (msg) => {
     const el = document.getElementById('scanStatus');
@@ -637,6 +657,8 @@ async function analyze(data, mode) {
     // Mostrar resultado PRIMERO — guardar en segundo plano
     hideLoading();
     setStatus('');
+    result.input_preview = inputMeta;
+    state.lastScanInput = inputMeta;
     showResult(result);
     saveScan(result).catch(e => console.warn('[SafeBite] saveScan:', e.message));
     incrementScans().catch(e => console.warn('[SafeBite] incrementScans:', e.message));
@@ -670,7 +692,7 @@ async function saveScan(result) {
   try {
     const { error } = await sb.from('scans').insert({
       user_id: state.user.id, child_id: state.activeChild?.id,
-      result: result.explanation, status: result.status,
+      result: `${result.input_preview?.type ? '[' + result.input_preview.type + '] ' : ''}${result.explanation || ''}`, status: result.status,
       ingredients: result.ingredients_found || '', risks: result.risks || [],
     });
     if (error) console.warn('[SafeBite] saveScan error (no crítico):', error.message);
@@ -683,7 +705,11 @@ async function saveScan(result) {
 function showResult(result) {
   const card = document.getElementById('resultCard');
   card.className = 'result-status-card';
-  const map = { APTO: ['🟢','var(--green)','apto'], PRECAUCION: ['🟡','var(--amber)','precaucion'] };
+  const map = {
+    APTO: ['🟢','var(--green)','apto'],
+    PRECAUCION: ['🟡','var(--amber)','precaucion'],
+    'NO VERIFICABLE': ['⚪','var(--muted)','no-verificable']
+  };
   const [icon, color, cls] = map[result.status] || ['🔴','var(--red)','no-apto'];
   card.classList.add(cls);
   document.getElementById('resultIcon').textContent = icon;
@@ -691,6 +717,8 @@ function showResult(result) {
   document.getElementById('resultTitle').style.color = color;
   document.getElementById('resultChild').textContent = state.activeChild ? `Perfil: ${state.activeChild.emoji} ${state.activeChild.name}` : '';
   document.getElementById('resultExplanation').textContent = result.explanation || '';
+
+  renderResultInputPreview(result.input_preview || state.lastScanInput, result.confidence);
 
   const rL = document.getElementById('risksList'); rL.innerHTML = '';
   if (result.risks?.length) { result.risks.forEach(r => { const c = document.createElement('span'); c.className = 'risk-chip'; c.textContent = r; rL.appendChild(c); }); document.getElementById('risksBlock').style.display = 'block'; }
@@ -714,6 +742,32 @@ function showResult(result) {
   else document.getElementById('ingredientsBlock').style.display = 'none';
 
   showScreen('screenResult');
+}
+
+
+function renderResultInputPreview(input, confidence) {
+  const block = document.getElementById('inputPreviewBlock');
+  const box = document.getElementById('inputPreviewBox');
+  if (!block || !box) return;
+  if (!input) { block.style.display = 'none'; return; }
+
+  const date = input.createdAt ? new Date(input.createdAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+  const conf = confidence ? `<span class="confidence-chip confidence-${String(conf).toLowerCase()}">Confianza ${escapeHtml(conf)}</span>` : '';
+  const meta = `<div class="input-preview-meta"><strong>${escapeHtml(input.type || 'Entrada')}</strong><span>${escapeHtml(input.fileName || '')}</span><span>${date}</span>${conf}</div>`;
+  const media = input.previewUrl
+    ? `<img src="${input.previewUrl}" alt="Imagen analizada" class="input-preview-img"/>`
+    : `<div class="input-preview-text">${escapeHtml(input.textPreview || 'Texto manual analizado')}</div>`;
+  box.innerHTML = `${media}${meta}`;
+  block.style.display = 'block';
+}
+
+function editLastAnalysisText() {
+  const ingredients = document.getElementById('ingredientsFound')?.textContent || '';
+  document.getElementById('manualText').value = ingredients;
+  showScreen('screenHome');
+  document.getElementById('textInputArea').classList.remove('hidden');
+  document.getElementById('manualText').focus();
+  document.getElementById('scanStatus').textContent = 'Corrige o completa los ingredientes y vuelve a analizar.';
 }
 
 function resetScan() {

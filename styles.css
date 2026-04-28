@@ -64,11 +64,13 @@ html, body {
 .app-banner-img {
   width: 100%;
   height: auto;
-  max-height: 110px;
-  object-fit: cover;
+  max-height: none;
+  object-fit: contain;
   object-position: center;
   border-radius: 16px;
   display: block;
+  background: #06111f;
+  border: 1px solid rgba(126,217,87,.12);
 }
 .app-banner--result {
   padding: 16px 16px 0;
@@ -604,6 +606,12 @@ html, body {
   box-shadow: var(--glow-red);
 }
 .result-status-card.no-apto::before { background: var(--red); }
+.result-status-card.no-verificable {
+  border-color: rgba(148,163,184,.35);
+  background: rgba(148,163,184,.05);
+  box-shadow: 0 0 36px rgba(148,163,184,.12);
+}
+.result-status-card.no-verificable::before { background: var(--muted); }
 
 .result-icon { font-size: 72px; margin-bottom: 12px; line-height: 1; animation: iconPop .4s cubic-bezier(.34,1.56,.64,1); }
 @keyframes iconPop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -660,6 +668,43 @@ html, body {
   font-weight: 500;
 }
 .ingredients-text { font-size: 13px; color: var(--muted); line-height: 1.6; }
+
+.input-preview-img {
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border-radius: 14px;
+  background: #020617;
+  border: 1px solid var(--border);
+  display: block;
+}
+.input-preview-text {
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text2);
+  background: rgba(2,6,23,.5);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+.input-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.input-preview-meta strong { color: var(--text); }
+.confidence-chip {
+  border: 1px solid var(--border2);
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: rgba(255,255,255,.04);
+}
+.confidence-alta { color: var(--green); border-color: rgba(126,217,87,.35); }
+.confidence-media { color: var(--amber); border-color: rgba(245,158,11,.35); }
+.confidence-baja { color: var(--red); border-color: rgba(239,68,68,.35); }
 
 .laztan-badge {
   display: flex;

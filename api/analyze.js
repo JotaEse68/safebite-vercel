@@ -9,7 +9,7 @@ const DEFAULT_RULES = [
   { ingredient_name: 'sulfito', aliases: ['sulfitos','dióxido de azufre','dioxido de azufre','e220','e221','e222','e223','e224','e226','e227','e228'], allergen: 'sulfitos', risk_level: 'medio', explanation: 'Sulfito o conservante relacionado.' }
 ];
 
-const STATUS_SCORE = { APTO: 0, PRECAUCION: 1, 'NO APTO': 2 };
+const STATUS_SCORE = { 'NO VERIFICABLE': 0, APTO: 1, PRECAUCION: 2, 'NO APTO': 3 };
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -47,15 +47,21 @@ export default async function handler(req, res) {
 
     if (!ingredientsText || ingredientsText.length < 5) {
       return res.status(200).json({
-        status: 'PRECAUCION',
+        status: mode === 'plate' ? 'NO VERIFICABLE' : 'PRECAUCION',
         confidence: 'baja',
-        explanation: 'No pude leer el texto con suficiente seguridad. Repite la foto con mejor luz o pega los ingredientes manualmente.',
-        risks: ['Texto ilegible o incompleto'],
+        explanation: mode === 'plate'
+          ? 'Una foto del plato no permite confirmar ingredientes, trazas o contaminación cruzada. Sube etiqueta, menú detallado o escribe ingredientes para una decisión fiable.'
+          : 'No pude leer el texto con suficiente seguridad. Repite la foto con mejor luz o pega los ingredientes manualmente.',
+        risks: mode === 'plate' ? ['Ingredientes no verificables solo por imagen'] : ['Texto ilegible o incompleto'],
         hidden_allergens: [],
         traces_warning: false,
         ingredients_found: '',
-        evidence: []
+        evidence: mode === 'plate' ? ['Criterio SafeBite: foto de plato sin ingredientes → NO VERIFICABLE'] : []
       });
+    }
+
+    if (mode === 'plate') {
+      return res.status(200).json(buildPlateResult(ingredientsText, childName));
     }
 
     const deterministic = applySafeBiteRules(ingredientsText, allergens, expertBase.rules);
@@ -82,7 +88,9 @@ export default async function handler(req, res) {
 async function extractTextWithOpenAI(openaiKey, imageDataUrl, mode) {
   const ocrPrompt = mode === 'menu'
     ? 'Eres un lector OCR experto. Transcribe TODO el texto visible en esta imagen de menú de restaurante: nombres de platos, ingredientes, alérgenos y descripciones. Devuelve solo el texto, sin análisis.'
-    : 'Eres un lector OCR experto en etiquetas alimentarias. Transcribe EXACTAMENTE la lista completa de ingredientes. Incluye porcentajes, aditivos E-xxx, trazas, alérgenos y advertencias. Devuelve solo el texto, sin análisis.';
+    : mode === 'plate'
+      ? 'Observa la imagen del plato y describe solo lo visible. No inventes ingredientes ocultos. Indica si parece plato preparado sin etiqueta. Devuelve una descripción breve de lo visible.'
+      : 'Eres un lector OCR experto en etiquetas alimentarias. Transcribe EXACTAMENTE la lista completa de ingredientes. Incluye porcentajes, aditivos E-xxx, trazas, alérgenos y advertencias. Devuelve solo el texto, sin análisis.';
 
   const ocrRes = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -127,7 +135,7 @@ async function analyzeWithAI({ claudeKey, openaiKey, ingredientsText, allergens,
     .map(d => `DOCUMENTO: ${d.title || d.name || 'Documento'}\nCATEGORÍA: ${d.category || 'general'}\nEXTRACTO:\n${String(d.content_text).slice(0, 1800)}`)
     .join('\n\n---\n\n');
 
-  const prompt = `Eres el motor experto de SafeBite para padres con hijos alérgicos.\n\n${allergenCtx}\n\nREGLAS ESTRUCTURADAS ACTIVAS:\n${JSON.stringify(rulesSample, null, 2)}\n\nRESULTADO DETERMINISTA PREVIO:\n${JSON.stringify(deterministic, null, 2)}\n\nBASE EXPERTA INTERNA LAZTAN / SAFEBITE:\n${docsContext || 'Sin documentos activos con texto.'}\n\nCRITERIO:\n1) Prioriza seguridad infantil.\n2) Si hay coincidencia directa o derivado de un alérgeno del perfil, marca NO APTO salvo que el riesgo sea bajo y la gravedad leve.\n3) Si hay trazas y la gravedad es grave, marca NO APTO. Si gravedad leve/moderada, marca PRECAUCION.\n4) Si la lectura es dudosa, marca PRECAUCION o NO APTO, nunca APTO.\n5) Explica en lenguaje claro para padres, sin prometer seguridad absoluta.\n\nINGREDIENTES / TEXTO ANALIZADO:\n${ingredientsText}\n\nDevuelve SOLO JSON válido con esta forma exacta:\n{"status":"APTO|PRECAUCION|NO APTO","confidence":"alta|media|baja","explanation":"...","risks":["..."],"hidden_allergens":["..."],"traces_warning":true|false,"ingredients_found":"...","evidence":["..."]}`;
+  const prompt = `Eres el motor experto de SafeBite para padres con hijos alérgicos.\n\n${allergenCtx}\n\nREGLAS ESTRUCTURADAS ACTIVAS:\n${JSON.stringify(rulesSample, null, 2)}\n\nRESULTADO DETERMINISTA PREVIO:\n${JSON.stringify(deterministic, null, 2)}\n\nBASE EXPERTA INTERNA LAZTAN / SAFEBITE:\n${docsContext || 'Sin documentos activos con texto.'}\n\nCRITERIO:\n1) Prioriza seguridad infantil.\n2) Si hay coincidencia directa o derivado de un alérgeno del perfil, marca NO APTO salvo que el riesgo sea bajo y la gravedad leve.\n3) Si hay trazas y la gravedad es grave, marca NO APTO. Si gravedad leve/moderada, marca PRECAUCION.\n4) Si la lectura es dudosa, marca PRECAUCION o NO APTO, nunca APTO.\n5) Si la entrada es una foto de plato o no hay ingredientes verificables, marca NO VERIFICABLE y pide etiqueta, menú detallado o texto.\n6) Explica en lenguaje claro para padres, sin prometer seguridad absoluta.\n\nINGREDIENTES / TEXTO ANALIZADO:\n${ingredientsText}\n\nDevuelve SOLO JSON válido con esta forma exacta:\n{"status":"APTO|PRECAUCION|NO APTO|NO VERIFICABLE","confidence":"alta|media|baja","explanation":"...","risks":["..."],"hidden_allergens":["..."],"traces_warning":true|false,"ingredients_found":"...","evidence":["..."]}`;
 
   if (claudeKey) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -249,7 +257,7 @@ function applySafeBiteRules(text, allergens, rules) {
 }
 
 function mergeResults(ai, deterministic, ingredientsText, expertBase) {
-  const aiStatus = ['APTO', 'PRECAUCION', 'NO APTO'].includes(ai.status) ? ai.status : 'PRECAUCION';
+  const aiStatus = ['APTO', 'PRECAUCION', 'NO APTO', 'NO VERIFICABLE'].includes(ai.status) ? ai.status : 'PRECAUCION';
   const finalStatus = STATUS_SCORE[deterministic.status] > STATUS_SCORE[aiStatus] ? deterministic.status : aiStatus;
   const evidence = unique([...(deterministic.evidence || []), ...(ai.evidence || [])]).slice(0, 8);
   const risks = unique([...(deterministic.risks || []), ...(ai.risks || [])]).slice(0, 12);
@@ -279,6 +287,28 @@ function mergeResults(ai, deterministic, ingredientsText, expertBase) {
   };
 }
 
+
+function buildPlateResult(visibleDescription, childName) {
+  return {
+    status: 'NO VERIFICABLE',
+    confidence: 'baja',
+    explanation: `La imagen parece una comida preparada. Solo con una foto del plato no puedo confirmar ingredientes, trazas ni contaminación cruzada para ${childName || 'este perfil'}. Para una decisión fiable, sube la etiqueta, el menú con ingredientes o escribe la receta completa.`,
+    risks: [
+      'Ingredientes ocultos no verificables por imagen',
+      'Posible contaminación cruzada en cocina no visible'
+    ],
+    hidden_allergens: [],
+    traces_warning: false,
+    ingredients_found: visibleDescription || 'Foto de plato sin lista de ingredientes verificable',
+    evidence: [
+      'Criterio SafeBite: una foto de plato no es suficiente para declarar APTO/NO APTO',
+      'Requiere etiqueta, menú detallado o ingredientes escritos'
+    ],
+    expert_source: 'safebite-rules',
+    expert_documents_used: []
+  };
+}
+
 function normalizeAliases(aliases) {
   if (!aliases) return [];
   if (Array.isArray(aliases)) return aliases;
@@ -296,7 +326,7 @@ function normalizeText(value) {
 }
 
 function maxStatus(a, b) {
-  return STATUS_SCORE[b] > STATUS_SCORE[a] ? b : a;
+  return (STATUS_SCORE[b] ?? 0) > (STATUS_SCORE[a] ?? 0) ? b : a;
 }
 
 function unique(arr) {

@@ -1,4 +1,4 @@
-# SafeBite V1.1 — Base Experta Laztan
+# SafeBite V1.2 — Resultado Pro + Plato Seguro
 
 PWA para familias con niños alérgicos. Escanea etiquetas o menús y devuelve una decisión clara: **APTO / PRECAUCIÓN / NO APTO** según el perfil del niño.
 
@@ -67,3 +67,15 @@ Esto crea:
 ## Nota operativa
 
 En esta V1.1 los PDF/DOCX pueden adjuntarse, pero para que la IA los use de forma fiable debes pegar también un resumen operativo en el campo de texto del admin. La extracción automática completa de PDF/DOCX queda preparada para V1.2.
+
+
+## V1.2 — Mejoras aplicadas
+
+- Banner ajustado para que se vea completo sin recorte.
+- Vista previa de la imagen o texto analizado dentro de la pantalla de resultado.
+- Nuevo modo `Plato` para fotos de comida preparada.
+- Resultado especial `NO VERIFICABLE` cuando la imagen no contiene ingredientes verificables.
+- Bloque de confianza del análisis.
+- Botón `Corregir / añadir ingredientes` desde el resultado.
+- Historial con descripción más clara del tipo de análisis.
+- Análisis de platos más prudente: no declara APTO/NO APTO solo por una foto del plato.
