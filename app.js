@@ -752,7 +752,8 @@ function renderResultInputPreview(input, confidence) {
   if (!input) { block.style.display = 'none'; return; }
 
   const date = input.createdAt ? new Date(input.createdAt).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
-  const conf = confidence ? `<span class="confidence-chip confidence-${String(conf).toLowerCase()}">Confianza ${escapeHtml(conf)}</span>` : '';
+  const confValue = String(confidence || '').toLowerCase();
+  const conf = confidence ? `<span class="confidence-chip confidence-${confValue}">Confianza ${escapeHtml(confidence)}</span>` : '';
   const meta = `<div class="input-preview-meta"><strong>${escapeHtml(input.type || 'Entrada')}</strong><span>${escapeHtml(input.fileName || '')}</span><span>${date}</span>${conf}</div>`;
   const media = input.previewUrl
     ? `<img src="${input.previewUrl}" alt="Imagen analizada" class="input-preview-img"/>`
