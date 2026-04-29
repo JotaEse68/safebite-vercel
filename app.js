@@ -1186,6 +1186,34 @@ function currentProductName(result = state.lastResult) {
   return String(base).replace(/\.(jpg|jpeg|png|webp|heic|pdf)$/i, '').replace(/^WhatsApp Image [^ ]+ at /i, 'Foto ');
 }
 
+async function insertSavedProductRobust(fullPayload) {
+  const minimalPayload = {
+    user_id: fullPayload.user_id,
+    child_id: fullPayload.child_id || null,
+    product_name: fullPayload.product_name || 'Producto analizado',
+    brand: fullPayload.brand || null,
+    status: fullPayload.status || '—',
+    decision: fullPayload.decision || fullPayload.kind || 'pending',
+    ingredients: fullPayload.ingredients || fullPayload.ingredients_found || '',
+    risks: fullPayload.risks || [],
+    hidden_allergens: fullPayload.hidden_allergens || [],
+    barcode: fullPayload.barcode || null,
+    image_url: fullPayload.image_url || null,
+    notes: fullPayload.notes || fullPayload.explanation || '',
+    catalog_product_id: fullPayload.catalog_product_id || null
+  };
+
+  let res = await sb.from('saved_products').insert(fullPayload).select().single();
+  if (!res.error) return res;
+
+  const msg = res.error.message || '';
+  if (/schema cache|column|Could not find/i.test(msg)) {
+    console.warn('[SafeBite] saved_products full payload falló, probando mínimo:', msg);
+    res = await sb.from('saved_products').insert(minimalPayload).select().single();
+  }
+  return res;
+}
+
 async function saveCurrentProduct(kind) {
   if (!state.lastResult) return alert('No hay resultado para guardar');
   const input = state.lastResult.input_preview || state.lastScanInput || {};
@@ -1195,21 +1223,38 @@ async function saveCurrentProduct(kind) {
     child_id: state.activeChild?.id || null,
     analysis_id: state.lastResult.analysis_id || state.lastHistoryId || null,
     kind,
+    decision: kind,
     product_name: productName,
     status: state.lastResult.status || '—',
     confidence: state.lastResult.confidence || null,
     explanation: state.lastResult.explanation || '',
+    summary: typeof buildResultSummary === 'function' ? buildResultSummary() : '',
+    ingredients: state.lastResult.ingredients_found || '',
     ingredients_found: state.lastResult.ingredients_found || '',
     risks: state.lastResult.risks || [],
     hidden_allergens: state.lastResult.hidden_allergens || [],
+    allergens_found: state.lastResult.allergens_found || [],
+    traces_found: state.lastResult.traces_found || [],
+    detected_allergens: state.lastResult.detected_allergens || [],
+    evidence: state.lastResult.evidence || [],
+    next_steps: state.lastResult.next_steps || [],
+    alternatives: state.lastResult.alternatives || [],
     input_type: input.type || modeLabel(input.mode),
     input_name: input.fileName || productName,
+    file_name: input.fileName || null,
+    input_mode: input.mode || state.scanMode || null,
     barcode: input.barcode || null,
     brand: input.brand || null,
-    catalog_product_id: input.catalogProductId || null
+    image_url: input.previewUrl || null,
+    product_source: input.source || null,
+    off_product_url: input.offProductUrl || null,
+    catalog_product_id: input.catalogProductId || null,
+    raw_result: state.lastResult || {},
+    notes: state.lastResult.explanation || ''
   };
-  const { error } = await sb.from('saved_products').insert(payload);
-  if (error) return alert('No se pudo guardar. ¿Aplicaste la migración V1.4? ' + error.message);
+
+  const { error } = await insertSavedProductRobust(payload);
+  if (error) return alert('No se pudo guardar: ' + error.message);
   await renderSavedProducts();
   alert(kind === 'safe' ? 'Guardado como producto seguro.' : kind === 'avoid' ? 'Guardado como producto a evitar.' : 'Guardado como pendiente de revisar.');
 }
@@ -1224,8 +1269,9 @@ async function renderSavedProducts() {
     return;
   }
   list.innerHTML = visible.map(x => {
-    const icon = x.kind === 'safe' ? '⭐' : x.kind === 'avoid' ? '🚫' : '🕒';
-    const cls = x.kind === 'safe' ? 'saved-safe' : x.kind === 'avoid' ? 'saved-avoid' : 'saved-pending';
+    const savedKind = x.kind || x.decision || 'pending';
+    const icon = savedKind === 'safe' ? '⭐' : savedKind === 'avoid' ? '🚫' : '🕒';
+    const cls = savedKind === 'safe' ? 'saved-safe' : savedKind === 'avoid' ? 'saved-avoid' : 'saved-pending';
     const date = x.created_at ? new Date(x.created_at).toLocaleDateString('es-ES', { day:'2-digit', month:'2-digit' }) : '';
     return '<button class="saved-product ' + cls + '" onclick="openSavedProduct(\'' + x.id + '\')"><span>' + icon + '</span><div><strong>' + escapeHtml(x.product_name) + '</strong><small>' + escapeHtml(x.status) + ' · ' + date + '</small></div></button>';
   }).join('');
@@ -1248,7 +1294,8 @@ async function openSavedProduct(id) {
 }
 
 function renderProductDetail(item) {
-  const icon = item.kind === 'safe' ? '⭐' : item.kind === 'avoid' ? '🚫' : '🕒';
+  const savedKind = item.kind || item.decision || 'pending';
+  const icon = savedKind === 'safe' ? '⭐' : savedKind === 'avoid' ? '🚫' : '🕒';
   const title = document.getElementById('productTitle');
   const meta = document.getElementById('productMeta');
   const body = document.getElementById('productBody');
@@ -1256,9 +1303,9 @@ function renderProductDetail(item) {
   title.textContent = icon + ' ' + (item.product_name || 'Producto guardado');
   const date = item.created_at ? new Date(item.created_at).toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
   body.dataset.currentProductId = item.id;
-  meta.textContent = (item.kind || 'guardado') + ' · ' + (item.status || '—') + ' · ' + date;
+  meta.textContent = (savedKind || 'guardado') + ' · ' + (item.status || '—') + ' · ' + date;
   const barcodeInfo = (item.barcode || item.brand) ? '<div class="detail-block"><p class="detail-label">Producto</p><p class="ingredients-text">' + escapeHtml([item.brand, item.barcode ? 'EAN ' + item.barcode : ''].filter(Boolean).join(' · ')) + '</p></div>' : '';
-  body.innerHTML = barcodeInfo + '\n    <div class="detail-block"><p class="detail-label">Decisión</p><p class="ingredients-text">' + escapeHtml(item.explanation || 'Sin explicación guardada.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes guardados</p><p class="ingredients-text">' + escapeHtml(item.ingredients_found || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Riesgos</p><div>' + ((item.risks || []).map(r => '<span class="risk-chip">' + escapeHtml(r) + '</span>').join('') || '<p class="empty-state compact">Sin riesgos guardados.</p>') + '</div></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyCurrentProductDetail()">📋 Copiar ficha</button><button class="btn-secondary compact" onclick="deleteCurrentProductDetail()">🗑️ Eliminar</button></div>\n  ';
+  body.innerHTML = barcodeInfo + '\n    <div class="detail-block"><p class="detail-label">Decisión</p><p class="ingredients-text">' + escapeHtml(item.explanation || item.notes || 'Sin explicación guardada.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes guardados</p><p class="ingredients-text">' + escapeHtml(item.ingredients_found || item.ingredients || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Riesgos</p><div>' + ((item.risks || []).map(r => '<span class="risk-chip">' + escapeHtml(r) + '</span>').join('') || '<p class="empty-state compact">Sin riesgos guardados.</p>') + '</div></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyCurrentProductDetail()">📋 Copiar ficha</button><button class="btn-secondary compact" onclick="deleteCurrentProductDetail()">🗑️ Eliminar</button></div>\n  ';
 }
 
 async function copyCurrentProductDetail() {
@@ -1266,7 +1313,7 @@ async function copyCurrentProductDetail() {
   if (!id) return;
   const { data } = await sb.from('saved_products').select('*').eq('id', id).single();
   if (!data) return;
-  const text = `SafeBite - Producto guardado\nProducto: ${data.product_name}\nEstado: ${data.status}\nTipo: ${data.kind}\n\n${data.explanation || ''}\n\nIngredientes: ${data.ingredients_found || '—'}\nRiesgos: ${(data.risks || []).join('; ') || '—'}`;
+  const text = `SafeBite - Producto guardado\nProducto: ${data.product_name}\nEstado: ${data.status}\nTipo: ${data.kind || data.decision || 'guardado'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}\nRiesgos: ${(data.risks || []).join('; ') || '—'}`;
   navigator.clipboard?.writeText(text).then(() => alert('Ficha copiada.')).catch(() => alert(text));
 }
 
@@ -1455,7 +1502,7 @@ function renderHistoryDetail(scan) {
 async function copyHistoryDetail(id) {
   const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
   if (!data) return;
-  const text = `SafeBite - Historial\nEntrada: ${data.input_name}\nEstado: ${data.status}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || ''}\n\nIngredientes: ${data.ingredients_found || '—'}`;
+  const text = `SafeBite - Historial\nEntrada: ${data.input_name}\nEstado: ${data.status}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}`;
   navigator.clipboard?.writeText(text).then(() => alert('Análisis copiado.')).catch(() => alert(text));
 }
 
@@ -1467,20 +1514,27 @@ async function saveHistoryAsProduct(id, kind) {
     child_id: data.child_id,
     analysis_id: data.id,
     kind,
-    product_name: data.input_name || 'Producto del historial',
+    decision: kind,
+    product_name: data.input_name || data.product_name || 'Producto del historial',
     status: data.status,
     confidence: data.confidence,
-    explanation: data.explanation,
-    ingredients_found: data.ingredients_found,
+    explanation: data.explanation || '',
+    summary: data.summary || '',
+    ingredients: data.ingredients_found || data.ingredients || '',
+    ingredients_found: data.ingredients_found || data.ingredients || '',
     risks: data.risks || [],
     hidden_allergens: data.hidden_allergens || [],
     input_type: data.input_type,
     input_name: data.input_name,
-    barcode: data.input_barcode || null,
-    catalog_product_id: data.catalog_product_id || null
+    input_mode: data.input_mode,
+    barcode: data.input_barcode || data.barcode || null,
+    brand: data.brand || null,
+    image_url: data.image_url || null,
+    catalog_product_id: data.catalog_product_id || null,
+    notes: data.explanation || ''
   };
-  const { error } = await sb.from('saved_products').insert(payload);
-  if (error) return alert(error.message);
+  const { error } = await insertSavedProductRobust(payload);
+  if (error) return alert('No se pudo guardar: ' + error.message);
   alert('Guardado en lista rápida.');
   renderSavedProducts().catch(()=>{});
 }

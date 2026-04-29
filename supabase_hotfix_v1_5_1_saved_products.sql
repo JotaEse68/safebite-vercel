@@ -1,0 +1,43 @@
+-- SafeBite V1.5.1 Hotfix - Guardado estable de productos
+alter table public.saved_products add column if not exists kind text;
+alter table public.saved_products add column if not exists input_name text;
+alter table public.saved_products add column if not exists input_barcode text;
+alter table public.saved_products add column if not exists input_type text;
+alter table public.saved_products add column if not exists input_mode text;
+alter table public.saved_products add column if not exists file_name text;
+alter table public.saved_products add column if not exists ingredients text;
+alter table public.saved_products add column if not exists ingredients_found jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists allergens_found jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists traces_found jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists detected_allergens jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists next_steps jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists alternatives jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists raw_result jsonb default '{}'::jsonb;
+alter table public.saved_products add column if not exists product_source text;
+alter table public.saved_products add column if not exists off_product_url text;
+alter table public.saved_products add column if not exists explanation text;
+alter table public.saved_products add column if not exists summary text;
+alter table public.saved_products add column if not exists notes text;
+alter table public.saved_products add column if not exists confidence text;
+alter table public.saved_products add column if not exists source text default 'safebite';
+alter table public.saved_products add column if not exists image_url text;
+alter table public.saved_products add column if not exists barcode text;
+alter table public.saved_products add column if not exists brand text;
+alter table public.saved_products add column if not exists decision text default 'pending';
+alter table public.saved_products add column if not exists status text;
+alter table public.saved_products add column if not exists risks jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists hidden_allergens jsonb default '[]'::jsonb;
+alter table public.saved_products add column if not exists analysis_id uuid references public.analysis_history(id) on delete set null;
+alter table public.saved_products add column if not exists catalog_product_id uuid references public.product_catalog(id) on delete set null;
+
+alter table public.saved_products enable row level security;
+drop policy if exists "Users can read own saved products" on public.saved_products;
+create policy "Users can read own saved products" on public.saved_products for select to authenticated using (auth.uid() = user_id);
+drop policy if exists "Users can insert own saved products" on public.saved_products;
+create policy "Users can insert own saved products" on public.saved_products for insert to authenticated with check (auth.uid() = user_id);
+drop policy if exists "Users can update own saved products" on public.saved_products;
+create policy "Users can update own saved products" on public.saved_products for update to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "Users can delete own saved products" on public.saved_products;
+create policy "Users can delete own saved products" on public.saved_products for delete to authenticated using (auth.uid() = user_id);
+
+select pg_notify('pgrst', 'reload schema');
