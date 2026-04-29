@@ -877,6 +877,30 @@ function modeLabel(mode) {
   return ({ label: 'Etiqueta / producto', menu: 'Menú / carta', plate: 'Foto de plato', barcode: 'Código de barras', text: 'Texto manual', voice: 'Voz' })[mode] || 'Análisis';
 }
 
+function normalizeAnalysisResult(result, mode = '', inputMeta = null) {
+  if (!result || typeof result !== 'object') return result;
+  const ingredients = String(result.ingredients_found || '').trim();
+  const explanation = String(result.explanation || '').toLowerCase();
+  const noIngredientsSignal = !ingredients || ingredients.length < 6 || /no se puede analizar|no se han proporcionado|sin ingredientes|ingredientes verificables|no hay ingredientes|no se detectaron ingredientes|no contiene información suficiente/.test(explanation);
+  const visualOrBarcode = ['label', 'menu', 'plate', 'barcode'].includes(mode) || ['Etiqueta / producto', 'Menú / carta', 'Foto de plato', 'Código de barras'].includes(inputMeta?.type || '');
+  if (result.status === 'APTO' && noIngredientsSignal && visualOrBarcode) {
+    result.status = 'NO VERIFICABLE';
+    result.confidence = 'baja';
+    result.explanation = 'No hay ingredientes verificables suficientes para confirmar que este producto sea apto para el perfil. Sube una foto clara de la etiqueta, pega los ingredientes o usa un código de barras con ficha completa.';
+    result.risks = ['Información insuficiente para decisión segura'];
+    result.hidden_allergens = result.hidden_allergens || [];
+    result.evidence = ['Criterio SafeBite: sin ingredientes verificables no se marca como APTO.', ...(result.evidence || [])];
+  }
+  if (mode === 'plate' && result.status === 'APTO') {
+    result.status = 'NO VERIFICABLE';
+    result.confidence = 'baja';
+    result.explanation = 'Una foto de plato preparado no permite confirmar ingredientes, trazas ni contaminación cruzada. Para decidir con seguridad, sube etiqueta, menú detallado o receta completa.';
+    result.risks = ['Foto de plato sin ingredientes confirmados'];
+    result.evidence = ['Criterio SafeBite: foto de plato preparado → NO VERIFICABLE salvo ingredientes confirmados.', ...(result.evidence || [])];
+  }
+  return result;
+}
+
 async function analyze(data, mode, inputMeta = null) {
   if (!checkScanLimit()) return;
   showLoading(mode === 'menu' ? 'Analizando menú...' : mode === 'plate' ? 'Revisando foto de plato...' : 'Analizando ingredientes...', 'IA con protocolos Laztan');
@@ -935,8 +959,9 @@ async function analyze(data, mode, inputMeta = null) {
       throw new Error('Error de servidor. Inténtalo de nuevo.');
     }
 
-    const result = await res.json();
+    let result = await res.json();
     if (!res.ok || result.error) throw new Error(result.error || 'Error en el análisis');
+    result = normalizeAnalysisResult(result, mode, inputMeta);
 
     // Mostrar resultado PRIMERO — guardar en segundo plano
     hideLoading();
@@ -989,38 +1014,36 @@ async function saveAnalysisHistory(result) {
   try {
     const input = result.input_preview || state.lastScanInput || {};
     const cleanInput = {
-      type: input.type || '',
-      mode: input.mode || '',
-      fileName: input.fileName || '',
-      mime: input.mime || '',
-      textPreview: input.textPreview || '',
-      createdAt: input.createdAt || new Date().toISOString(),
-      barcode: input.barcode || '',
-      productName: input.productName || '',
-      brand: input.brand || '',
-      catalogProductId: input.catalogProductId || null,
-      source: input.source || ''
+      type: input.type || '', mode: input.mode || '', fileName: input.fileName || '', mime: input.mime || '',
+      textPreview: input.textPreview || '', createdAt: input.createdAt || new Date().toISOString(),
+      barcode: input.barcode || '', productName: input.productName || '', brand: input.brand || '',
+      catalogProductId: input.catalogProductId || null, source: input.source || ''
     };
-    const { data, error } = await sb.from('analysis_history').insert({
-      user_id: state.user.id,
-      child_id: state.activeChild?.id || null,
-      child_name: state.activeChild?.name || null,
+    const fullPayload = {
+      user_id: state.user.id, child_id: state.activeChild?.id || null, child_name: state.activeChild?.name || null,
       input_type: cleanInput.type || modeLabel(cleanInput.mode),
-      input_name: cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
-      status: result.status || 'PRECAUCION',
-      confidence: result.confidence || null,
-      explanation: result.explanation || '',
-      risks: result.risks || [],
-      hidden_allergens: result.hidden_allergens || [],
-      ingredients_found: result.ingredients_found || '',
-      evidence: result.evidence || [],
-      expert_documents_used: result.expert_documents_used || [],
-      input_preview: cleanInput,
-      input_barcode: cleanInput.barcode || null,
-      catalog_product_id: cleanInput.catalogProductId || null
-    }).select('id').single();
-    if (error) { console.warn('[SafeBite] analysis_history:', error.message); return null; }
-    return data?.id || null;
+      input_name: cleanInput.productName || cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
+      status: result.status || 'PRECAUCION', confidence: result.confidence || null, explanation: result.explanation || '',
+      risks: result.risks || [], hidden_allergens: result.hidden_allergens || [], ingredients_found: result.ingredients_found || '',
+      evidence: result.evidence || [], expert_documents_used: result.expert_documents_used || [], input_preview: cleanInput,
+      input_barcode: cleanInput.barcode || null, input_mode: cleanInput.mode || null, barcode: cleanInput.barcode || null,
+      product_name: cleanInput.productName || null, brand: cleanInput.brand || null, image_url: input.previewUrl || input.image_url || null,
+      catalog_product_id: cleanInput.catalogProductId || null, source: cleanInput.source || 'safebite'
+    };
+    const minimalPayload = {
+      user_id: state.user.id, child_id: state.activeChild?.id || null,
+      input_type: cleanInput.type || modeLabel(cleanInput.mode),
+      input_name: cleanInput.productName || cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
+      status: result.status || 'PRECAUCION', confidence: result.confidence || null, explanation: result.explanation || '',
+      risks: result.risks || [], hidden_allergens: result.hidden_allergens || [], ingredients_found: result.ingredients_found || ''
+    };
+    let res = await sb.from('analysis_history').insert(fullPayload).select('id').single();
+    if (res.error && /schema cache|column|Could not find/i.test(res.error.message || '')) {
+      console.warn('[SafeBite] analysis_history full payload falló, probando mínimo:', res.error.message);
+      res = await sb.from('analysis_history').insert(minimalPayload).select('id').single();
+    }
+    if (res.error) { console.warn('[SafeBite] analysis_history:', res.error.message); return null; }
+    return res.data?.id || null;
   } catch(e) {
     console.warn('[SafeBite] saveAnalysisHistory excepción:', e.message);
     return null;
@@ -1216,6 +1239,9 @@ async function insertSavedProductRobust(fullPayload) {
 
 async function saveCurrentProduct(kind) {
   if (!state.lastResult) return alert('No hay resultado para guardar');
+  if (kind === 'safe' && state.lastResult.status !== 'APTO') {
+    return alert('No se puede guardar como seguro si el resultado no es APTO. Puedes guardarlo como evitar o revisar luego.');
+  }
   const input = state.lastResult.input_preview || state.lastScanInput || {};
   const productName = currentProductName();
   const payload = {
@@ -1314,7 +1340,7 @@ async function copyCurrentProductDetail() {
   const { data } = await sb.from('saved_products').select('*').eq('id', id).single();
   if (!data) return;
   const text = `SafeBite - Producto guardado\nProducto: ${data.product_name}\nEstado: ${data.status}\nTipo: ${data.kind || data.decision || 'guardado'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}\nRiesgos: ${(data.risks || []).join('; ') || '—'}`;
-  navigator.clipboard?.writeText(text).then(() => alert('Ficha copiada.')).catch(() => alert(text));
+  copyToClipboardOrShow(text, 'Ficha copiada.');
 }
 
 async function deleteCurrentProductDetail() {
@@ -1335,16 +1361,38 @@ function buildResultSummary() {
   return `SafeBite - Resultado\nPerfil: ${child}\nProducto/entrada: ${currentProductName()}${barcodeLine}\nEstado: ${state.lastResult.status}\nConfianza: ${state.lastResult.confidence || '—'}\n\nDecisión:\n${state.lastResult.explanation || ''}\n\nRiesgos:\n${(state.lastResult.risks || []).join('; ') || 'No especificados'}\n\nAlérgenos ocultos:\n${(state.lastResult.hidden_allergens || []).join('; ') || 'No detectados'}\n\nIngredientes detectados:\n${state.lastResult.ingredients_found || '—'}`;
 }
 
+function copyToClipboardOrShow(text, okMessage = 'Copiado.') {
+  if (!text) return;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => alert(okMessage)).catch(() => alert(text));
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    alert(okMessage);
+  } catch(e) { alert(text); }
+}
+
 function copyResultSummary() {
   const text = buildResultSummary();
-  if (!text) return;
-  navigator.clipboard?.writeText(text).then(() => alert('Resumen copiado.')).catch(() => alert(text));
+  if (!text) return alert('No hay resumen para copiar.');
+  copyToClipboardOrShow(text, 'Resumen copiado.');
 }
 
 function shareResultWhatsApp() {
   const text = buildResultSummary();
-  if (!text) return;
-  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  if (!text) return alert('No hay resultado para compartir.');
+  const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) window.location.href = url;
 }
 
 function renderValidationBlock(result) {
@@ -1503,7 +1551,7 @@ async function copyHistoryDetail(id) {
   const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
   if (!data) return;
   const text = `SafeBite - Historial\nEntrada: ${data.input_name}\nEstado: ${data.status}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}`;
-  navigator.clipboard?.writeText(text).then(() => alert('Análisis copiado.')).catch(() => alert(text));
+  copyToClipboardOrShow(text, 'Análisis copiado.');
 }
 
 async function saveHistoryAsProduct(id, kind) {
