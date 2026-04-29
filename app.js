@@ -584,9 +584,9 @@ async function deleteProductAlternative(id) {
 async function loadRecentProducts() {
   const list = document.getElementById('adminRecentProductsList');
   if (!list) return;
-  const { data, error } = await sb.from('saved_products').select('product_name,status,kind,created_at').order('created_at', { ascending: false }).limit(8);
+  const { data, error } = await sb.from('saved_products').select('product_name,status,decision,created_at').order('created_at', { ascending: false }).limit(8);
   if (error) { list.innerHTML = '<p class="empty-state compact">Sin productos guardados todavía.</p>'; return; }
-  list.innerHTML = (data || []).map(p => '<div class="admin-user-row"><span class="admin-user-email">' + escapeHtml(p.product_name) + '</span><span class="admin-user-plan">' + escapeHtml(p.kind) + '</span><span class="admin-user-scans">' + escapeHtml(p.status) + '</span></div>').join('') || '<p class="empty-state compact">Sin productos guardados todavía.</p>';
+  list.innerHTML = (data || []).map(p => '<div class="admin-user-row"><span class="admin-user-email">' + escapeHtml(p.product_name) + '</span><span class="admin-user-plan">' + escapeHtml(p.decision || 'guardado') + '</span><span class="admin-user-scans">' + escapeHtml(p.status) + '</span></div>').join('') || '<p class="empty-state compact">Sin productos guardados todavía.</p>';
 }
 
 // Compatibilidad: función antigua para no romper botones previos si quedan cacheados.
@@ -877,26 +877,60 @@ function modeLabel(mode) {
   return ({ label: 'Etiqueta / producto', menu: 'Menú / carta', plate: 'Foto de plato', barcode: 'Código de barras', text: 'Texto manual', voice: 'Voz' })[mode] || 'Análisis';
 }
 
+function normalizeStatus(value) {
+  const raw = String(value || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  if (raw.includes('NO VERIFICABLE') || raw.includes('NO VERIFICADO')) return 'NO VERIFICABLE';
+  if (raw.includes('NO APTO') || raw.includes('PROHIBIDO')) return 'NO APTO';
+  if (raw.includes('PRECAUC')) return 'PRECAUCION';
+  if (raw === 'APTO' || raw.includes(' APTO')) return 'APTO';
+  return raw || 'PRECAUCION';
+}
+
+function hasVerifiableIngredients(result, inputMeta = null, mode = '') {
+  const ingredients = String(result?.ingredients_found || result?.ingredients || '').trim();
+  const explanation = String(result?.explanation || '').toLowerCase();
+  const inputText = String(inputMeta?.textPreview || '').trim();
+  const combined = `${explanation} ${ingredients} ${inputText}`.toLowerCase();
+
+  const saysCannotDecide = /no se puede|no puedo|no hay ingredientes|sin ingredientes|no se han proporcionado|no contiene informaci[oó]n suficiente|ingredientes verificables|lista verificable|no se detectaron ingredientes|no se puede determinar|proporciona la etiqueta|proporciona.*ingredientes|solo con.*foto|foto del plato/.test(combined);
+
+  const looksLikeIngredients = /(ingredientes?|contiene|puede contener|trazas?|\be-?\d{3}\b|agua|sal|az[uú]car|aceite|harina|leche|huevo|soja|gluten|trigo|arroz|ma[ií]z|prote[ií]na|conservador|estabilizador|aroma|dextrosa|jarabe|gelificante|antioxidante)/i.test(ingredients || inputText);
+
+  if (saysCannotDecide) return false;
+  if (ingredients.length >= 8 && looksLikeIngredients) return true;
+  if (inputText.length >= 8 && looksLikeIngredients) return true;
+  return false;
+}
+
+function forceNoVerifiable(result, reason) {
+  result.status = 'NO VERIFICABLE';
+  result.confidence = 'baja';
+  result.explanation = reason || 'No hay ingredientes verificables suficientes para confirmar la seguridad de este alimento. Sube la etiqueta, pega los ingredientes o usa un código de barras con ficha completa.';
+  result.risks = result.risks?.length ? result.risks : ['Información insuficiente para decisión segura'];
+  result.hidden_allergens = result.hidden_allergens || [];
+  result.evidence = ['Criterio SafeBite: sin ingredientes verificables no se marca como APTO.', ...(result.evidence || [])];
+  return result;
+}
+
 function normalizeAnalysisResult(result, mode = '', inputMeta = null) {
   if (!result || typeof result !== 'object') return result;
-  const ingredients = String(result.ingredients_found || '').trim();
-  const explanation = String(result.explanation || '').toLowerCase();
-  const noIngredientsSignal = !ingredients || ingredients.length < 6 || /no se puede analizar|no se han proporcionado|sin ingredientes|ingredientes verificables|no hay ingredientes|no se detectaron ingredientes|no contiene información suficiente/.test(explanation);
-  const visualOrBarcode = ['label', 'menu', 'plate', 'barcode'].includes(mode) || ['Etiqueta / producto', 'Menú / carta', 'Foto de plato', 'Código de barras'].includes(inputMeta?.type || '');
-  if (result.status === 'APTO' && noIngredientsSignal && visualOrBarcode) {
-    result.status = 'NO VERIFICABLE';
-    result.confidence = 'baja';
-    result.explanation = 'No hay ingredientes verificables suficientes para confirmar que este producto sea apto para el perfil. Sube una foto clara de la etiqueta, pega los ingredientes o usa un código de barras con ficha completa.';
-    result.risks = ['Información insuficiente para decisión segura'];
-    result.hidden_allergens = result.hidden_allergens || [];
-    result.evidence = ['Criterio SafeBite: sin ingredientes verificables no se marca como APTO.', ...(result.evidence || [])];
+  result.status = normalizeStatus(result.status);
+  result.confidence = String(result.confidence || '').toLowerCase() || 'media';
+  result.risks = Array.isArray(result.risks) ? result.risks : [];
+  result.hidden_allergens = Array.isArray(result.hidden_allergens) ? result.hidden_allergens : [];
+  result.evidence = Array.isArray(result.evidence) ? result.evidence : [];
+
+  const input = inputMeta || result.input_preview || state.lastScanInput || {};
+  const normalizedMode = mode || input.mode || state.scanMode || '';
+  const visualModes = ['label', 'menu', 'plate', 'barcode'];
+  const visualOrBarcode = visualModes.includes(normalizedMode) || ['Etiqueta / producto', 'Menú / carta', 'Foto de plato', 'Código de barras'].includes(input.type || '');
+
+  if (normalizedMode === 'plate') {
+    return forceNoVerifiable(result, 'Una foto de plato preparado no permite confirmar ingredientes, trazas ni contaminación cruzada. Para decidir con seguridad, sube etiqueta, menú detallado o receta completa.');
   }
-  if (mode === 'plate' && result.status === 'APTO') {
-    result.status = 'NO VERIFICABLE';
-    result.confidence = 'baja';
-    result.explanation = 'Una foto de plato preparado no permite confirmar ingredientes, trazas ni contaminación cruzada. Para decidir con seguridad, sube etiqueta, menú detallado o receta completa.';
-    result.risks = ['Foto de plato sin ingredientes confirmados'];
-    result.evidence = ['Criterio SafeBite: foto de plato preparado → NO VERIFICABLE salvo ingredientes confirmados.', ...(result.evidence || [])];
+
+  if (result.status === 'APTO' && visualOrBarcode && !hasVerifiableIngredients(result, input, normalizedMode)) {
+    return forceNoVerifiable(result, 'No hay ingredientes verificables suficientes para confirmar que este producto sea apto para el perfil. Sube una foto clara de la etiqueta, pega los ingredientes o usa un código de barras con ficha completa.');
   }
   return result;
 }
@@ -1013,45 +1047,38 @@ async function saveScan(result) {
 async function saveAnalysisHistory(result) {
   try {
     const input = result.input_preview || state.lastScanInput || {};
-    const cleanInput = {
-      type: input.type || '', mode: input.mode || '', fileName: input.fileName || '', mime: input.mime || '',
-      textPreview: input.textPreview || '', createdAt: input.createdAt || new Date().toISOString(),
-      barcode: input.barcode || '', productName: input.productName || '', brand: input.brand || '',
-      catalogProductId: input.catalogProductId || null, source: input.source || ''
+    const payload = {
+      user_id: state.user.id,
+      child_id: state.activeChild?.id || null,
+      status: normalizeStatus(result.status || 'PRECAUCION'),
+      confidence: result.confidence || null,
+      explanation: result.explanation || '',
+      ingredients: result.ingredients_found || '',
+      risks: result.risks || [],
+      hidden_allergens: result.hidden_allergens || [],
+      input_type: input.type || modeLabel(input.mode),
+      input_mode: input.mode || state.scanMode || null,
+      file_name: input.fileName || null,
+      product_name: input.productName || currentProductName(result),
+      brand: input.brand || null,
+      barcode: input.barcode || null,
+      image_url: input.previewUrl || input.image_url || null
     };
-    const fullPayload = {
-      user_id: state.user.id, child_id: state.activeChild?.id || null, child_name: state.activeChild?.name || null,
-      input_type: cleanInput.type || modeLabel(cleanInput.mode),
-      input_name: cleanInput.productName || cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
-      status: result.status || 'PRECAUCION', confidence: result.confidence || null, explanation: result.explanation || '',
-      risks: result.risks || [], hidden_allergens: result.hidden_allergens || [], ingredients_found: result.ingredients_found || '',
-      evidence: result.evidence || [], expert_documents_used: result.expert_documents_used || [], input_preview: cleanInput,
-      input_barcode: cleanInput.barcode || null, input_mode: cleanInput.mode || null, barcode: cleanInput.barcode || null,
-      product_name: cleanInput.productName || null, brand: cleanInput.brand || null, image_url: input.previewUrl || input.image_url || null,
-      catalog_product_id: cleanInput.catalogProductId || null, source: cleanInput.source || 'safebite'
-    };
-    const minimalPayload = {
-      user_id: state.user.id, child_id: state.activeChild?.id || null,
-      input_type: cleanInput.type || modeLabel(cleanInput.mode),
-      input_name: cleanInput.productName || cleanInput.fileName || cleanInput.textPreview?.slice(0, 80) || 'Análisis SafeBite',
-      status: result.status || 'PRECAUCION', confidence: result.confidence || null, explanation: result.explanation || '',
-      risks: result.risks || [], hidden_allergens: result.hidden_allergens || [], ingredients_found: result.ingredients_found || ''
-    };
-    let res = await sb.from('analysis_history').insert(fullPayload).select('id').single();
-    if (res.error && /schema cache|column|Could not find/i.test(res.error.message || '')) {
-      console.warn('[SafeBite] analysis_history full payload falló, probando mínimo:', res.error.message);
-      res = await sb.from('analysis_history').insert(minimalPayload).select('id').single();
-    }
-    if (res.error) { console.warn('[SafeBite] analysis_history:', res.error.message); return null; }
-    return res.data?.id || null;
+
+    const { data, error } = await sb.from('analysis_history').insert(payload).select('id').single();
+    if (error) throw error;
+    return data?.id || null;
   } catch(e) {
-    console.warn('[SafeBite] saveAnalysisHistory excepción:', e.message);
-    return null;
+    console.warn('[SafeBite] analysis_history Supabase falló, usando fallback local:', e.message);
+    const localId = saveLocalHistory(result);
+    return localId;
   }
 }
 
-// ── Show result ────────────────────────────────────────────────────────────────
+// ── Show result// ── Show result ────────────────────────────────────────────────────────────────
 function showResult(result) {
+  result = normalizeAnalysisResult(result, result?.input_preview?.mode || state.scanMode, result?.input_preview || state.lastScanInput);
+
   const card = document.getElementById('resultCard');
   card.className = 'result-status-card';
   const map = {
@@ -1068,6 +1095,7 @@ function showResult(result) {
   document.getElementById('resultExplanation').textContent = result.explanation || '';
   state.lastResult = result;
 
+  updateResultActionButtons(result);
   renderResultInputPreview(result.input_preview || state.lastScanInput, result.confidence);
   renderAlternatives(result);
   renderNextSteps(result);
@@ -1097,6 +1125,28 @@ function showResult(result) {
   showScreen('screenResult');
 }
 
+function updateResultActionButtons(result) {
+  const buttons = Array.from(document.querySelectorAll('.result-actions-card button'));
+  const safeBtn = buttons.find(b => b.textContent.includes('Guardar como seguro'));
+  const avoidBtn = buttons.find(b => b.textContent.includes('Guardar como evitar'));
+  const pendingBtn = buttons.find(b => b.textContent.includes('Revisar luego'));
+  const copyBtn = buttons.find(b => b.textContent.includes('Copiar'));
+  const whatsBtn = buttons.find(b => b.textContent.includes('WhatsApp'));
+
+  if (safeBtn) {
+    const canSaveSafe = result.status === 'APTO' && hasVerifiableIngredients(result, result.input_preview || state.lastScanInput, result.input_preview?.mode || state.scanMode);
+    safeBtn.disabled = !canSaveSafe;
+    safeBtn.style.opacity = canSaveSafe ? '1' : '0.45';
+    safeBtn.title = canSaveSafe ? '' : 'Solo se puede guardar como seguro cuando el resultado es APTO con ingredientes verificables.';
+  }
+  if (avoidBtn) avoidBtn.disabled = false;
+  if (pendingBtn) pendingBtn.disabled = false;
+  if (copyBtn) copyBtn.disabled = false;
+  if (whatsBtn) {
+    whatsBtn.disabled = false;
+    whatsBtn.textContent = '🟢 Compartir por WhatsApp';
+  }
+}
 
 function renderResultInputPreview(input, confidence) {
   const block = document.getElementById('inputPreviewBlock');
@@ -1190,17 +1240,86 @@ function renderNextSteps(result) {
   block.style.display = 'block';
 }
 
+function localKey(name) {
+  return `safebite_${name}_${state.user?.id || 'anon'}`;
+}
+
+function readLocalArray(name) {
+  try { return JSON.parse(localStorage.getItem(localKey(name)) || '[]'); }
+  catch(e) { return []; }
+}
+
+function writeLocalArray(name, arr) {
+  try { localStorage.setItem(localKey(name), JSON.stringify(arr || [])); }
+  catch(e) { console.warn('[SafeBite] localStorage:', e.message); }
+}
+
+function saveLocalProduct(payload) {
+  const item = {
+    id: `local_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    created_at: new Date().toISOString(),
+    ...payload,
+    local_only: true
+  };
+  const arr = readLocalArray('saved_products');
+  arr.unshift(item);
+  writeLocalArray('saved_products', arr.slice(0, 100));
+  return item;
+}
+
+function saveLocalHistory(result) {
+  const input = result.input_preview || state.lastScanInput || {};
+  const item = {
+    id: `local_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    user_id: state.user?.id || null,
+    child_id: state.activeChild?.id || null,
+    created_at: new Date().toISOString(),
+    status: normalizeStatus(result.status || 'PRECAUCION'),
+    confidence: result.confidence || null,
+    explanation: result.explanation || '',
+    ingredients: result.ingredients_found || '',
+    ingredients_found: result.ingredients_found || '',
+    risks: result.risks || [],
+    hidden_allergens: result.hidden_allergens || [],
+    input_type: input.type || modeLabel(input.mode),
+    input_mode: input.mode || state.scanMode || null,
+    file_name: input.fileName || null,
+    product_name: input.productName || currentProductName(result),
+    brand: input.brand || null,
+    barcode: input.barcode || null,
+    image_url: input.previewUrl || input.image_url || null,
+    local_only: true
+  };
+  const arr = readLocalArray('analysis_history');
+  arr.unshift(item);
+  writeLocalArray('analysis_history', arr.slice(0, 120));
+  return item.id;
+}
+
 async function getSavedProducts() {
   if (!state.user) return [];
-  let q = sb.from('saved_products')
-    .select('*')
-    .eq('user_id', state.user.id)
-    .order('created_at', { ascending: false })
-    .limit(50);
-  if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
-  const { data, error } = await q;
-  if (error) { console.warn('[SafeBite] getSavedProducts:', error.message); return []; }
-  return data || [];
+  let remote = [];
+  try {
+    let q = sb.from('saved_products')
+      .select('*')
+      .eq('user_id', state.user.id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
+    const { data, error } = await q;
+    if (error) throw error;
+    remote = data || [];
+  } catch(e) {
+    console.warn('[SafeBite] getSavedProducts Supabase:', e.message);
+  }
+  const local = readLocalArray('saved_products').filter(x => !state.activeChild?.id || x.child_id === state.activeChild.id);
+  const seen = new Set();
+  return [...remote, ...local].filter(x => {
+    const key = `${x.id || ''}_${x.product_name || ''}_${x.created_at || ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
 }
 
 function currentProductName(result = state.lastResult) {
@@ -1210,72 +1329,63 @@ function currentProductName(result = state.lastResult) {
 }
 
 async function insertSavedProductRobust(fullPayload) {
-  const minimalPayload = {
+  const payload = {
     user_id: fullPayload.user_id,
     child_id: fullPayload.child_id || null,
     product_name: fullPayload.product_name || 'Producto analizado',
     brand: fullPayload.brand || null,
-    status: fullPayload.status || '—',
+    status: normalizeStatus(fullPayload.status || '—'),
     decision: fullPayload.decision || fullPayload.kind || 'pending',
     ingredients: fullPayload.ingredients || fullPayload.ingredients_found || '',
-    risks: fullPayload.risks || [],
-    hidden_allergens: fullPayload.hidden_allergens || [],
+    risks: Array.isArray(fullPayload.risks) ? fullPayload.risks : [],
+    hidden_allergens: Array.isArray(fullPayload.hidden_allergens) ? fullPayload.hidden_allergens : [],
     barcode: fullPayload.barcode || null,
     image_url: fullPayload.image_url || null,
-    notes: fullPayload.notes || fullPayload.explanation || '',
-    catalog_product_id: fullPayload.catalog_product_id || null
+    notes: fullPayload.notes || fullPayload.explanation || ''
   };
 
-  let res = await sb.from('saved_products').insert(fullPayload).select().single();
-  if (!res.error) return res;
+  if (fullPayload.catalog_product_id) payload.catalog_product_id = fullPayload.catalog_product_id;
 
-  const msg = res.error.message || '';
-  if (/schema cache|column|Could not find/i.test(msg)) {
-    console.warn('[SafeBite] saved_products full payload falló, probando mínimo:', msg);
-    res = await sb.from('saved_products').insert(minimalPayload).select().single();
+  try {
+    const res = await sb.from('saved_products').insert(payload).select().single();
+    if (!res.error) return res;
+    throw res.error;
+  } catch(e) {
+    console.warn('[SafeBite] saved_products Supabase falló, guardando local:', e.message);
+    const local = saveLocalProduct(payload);
+    return { data: local, error: null };
   }
-  return res;
 }
 
 async function saveCurrentProduct(kind) {
   if (!state.lastResult) return alert('No hay resultado para guardar');
-  if (kind === 'safe' && state.lastResult.status !== 'APTO') {
-    return alert('No se puede guardar como seguro si el resultado no es APTO. Puedes guardarlo como evitar o revisar luego.');
+  state.lastResult = normalizeAnalysisResult(state.lastResult, state.lastResult.input_preview?.mode || state.scanMode, state.lastResult.input_preview || state.lastScanInput);
+
+  if (kind === 'safe') {
+    const input = state.lastResult.input_preview || state.lastScanInput || {};
+    if (state.lastResult.status !== 'APTO' || !hasVerifiableIngredients(state.lastResult, input, input.mode || state.scanMode)) {
+      return alert('No se puede guardar como seguro: falta una lista de ingredientes verificable. Guárdalo como revisar luego o evitar.');
+    }
   }
+
   const input = state.lastResult.input_preview || state.lastScanInput || {};
   const productName = currentProductName();
   const payload = {
     user_id: state.user.id,
     child_id: state.activeChild?.id || null,
-    analysis_id: state.lastResult.analysis_id || state.lastHistoryId || null,
     kind,
     decision: kind,
     product_name: productName,
     status: state.lastResult.status || '—',
-    confidence: state.lastResult.confidence || null,
     explanation: state.lastResult.explanation || '',
-    summary: typeof buildResultSummary === 'function' ? buildResultSummary() : '',
     ingredients: state.lastResult.ingredients_found || '',
     ingredients_found: state.lastResult.ingredients_found || '',
     risks: state.lastResult.risks || [],
     hidden_allergens: state.lastResult.hidden_allergens || [],
-    allergens_found: state.lastResult.allergens_found || [],
-    traces_found: state.lastResult.traces_found || [],
-    detected_allergens: state.lastResult.detected_allergens || [],
-    evidence: state.lastResult.evidence || [],
-    next_steps: state.lastResult.next_steps || [],
-    alternatives: state.lastResult.alternatives || [],
-    input_type: input.type || modeLabel(input.mode),
-    input_name: input.fileName || productName,
-    file_name: input.fileName || null,
-    input_mode: input.mode || state.scanMode || null,
     barcode: input.barcode || null,
     brand: input.brand || null,
     image_url: input.previewUrl || null,
-    product_source: input.source || null,
-    off_product_url: input.offProductUrl || null,
     catalog_product_id: input.catalogProductId || null,
-    raw_result: state.lastResult || {},
     notes: state.lastResult.explanation || ''
   };
 
@@ -1519,24 +1629,45 @@ async function loadHistory() {
   const list = document.getElementById('historyList');
   const filter = document.getElementById('historyFilter')?.value || 'all';
   list.innerHTML = '<p class="empty-state">Cargando...</p>';
-  let q = sb.from('analysis_history').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(40);
-  if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
-  if (filter !== 'all') q = q.eq('status', filter);
-  const { data: scans, error } = await q;
-  if (error) {
-    list.innerHTML = '<p class="empty-state">Aplica la migración V1.4 para activar el historial avanzado.</p>';
-    return;
+
+  let scans = [];
+  try {
+    let q = sb.from('analysis_history').select('*').eq('user_id', state.user.id).order('created_at', { ascending: false }).limit(40);
+    if (state.activeChild?.id) q = q.eq('child_id', state.activeChild.id);
+    if (filter !== 'all') q = q.eq('status', filter);
+    const { data, error } = await q;
+    if (error) throw error;
+    scans = data || [];
+  } catch(e) {
+    console.warn('[SafeBite] loadHistory Supabase:', e.message);
   }
-  if (!scans?.length) { list.innerHTML = '<p class="empty-state">No hay análisis todavía para este filtro.</p>'; return; }
+
+  const local = readLocalArray('analysis_history')
+    .filter(x => !state.activeChild?.id || x.child_id === state.activeChild.id)
+    .filter(x => filter === 'all' || normalizeStatus(x.status) === filter);
+
+  const seen = new Set();
+  scans = [...scans, ...local].filter(x => {
+    const key = `${x.id || ''}_${x.created_at || ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+
+  if (!scans.length) { list.innerHTML = '<p class="empty-state">No hay análisis todavía para este filtro.</p>'; return; }
+
   list.innerHTML = '';
   scans.forEach(scan => {
-    const icon = scan.status === 'APTO' ? '🟢' : scan.status === 'PRECAUCION' ? '🟡' : scan.status === 'NO VERIFICABLE' ? '⚪' : '🔴';
-    const cls  = scan.status === 'APTO' ? 'apto' : scan.status === 'PRECAUCION' ? 'precaucion' : scan.status === 'NO VERIFICABLE' ? 'no-verificable' : 'no-apto';
+    const status = normalizeStatus(scan.status);
+    const icon = status === 'APTO' ? '🟢' : status === 'PRECAUCION' ? '🟡' : status === 'NO VERIFICABLE' ? '⚪' : '🔴';
+    const cls  = status === 'APTO' ? 'apto' : status === 'PRECAUCION' ? 'precaucion' : status === 'NO VERIFICABLE' ? 'no-verificable' : 'no-apto';
     const date = new Date(scan.created_at).toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    const inputName = scan.input_name || scan.product_name || scan.file_name || scan.explanation || 'Análisis SafeBite';
+    const inputType = scan.input_type || scan.input_mode || '';
     const item = document.createElement('button');
     item.className = 'history-item history-clickable';
     item.onclick = () => renderHistoryDetail(scan);
-    item.innerHTML = '<span class="history-icon">' + icon + '</span><div style="flex:1;min-width:0"><p class="history-status ' + cls + '">' + escapeHtml(scan.status) + '</p><p class="history-explanation">' + escapeHtml(scan.input_name || scan.explanation || 'Análisis SafeBite') + '</p><p class="history-meta">' + escapeHtml(scan.input_type || '') + ' · ' + escapeHtml(scan.confidence || '') + '</p></div><span class="history-date">' + date + '</span>';
+    item.innerHTML = '<span class="history-icon">' + icon + '</span><div style="flex:1;min-width:0"><p class="history-status ' + cls + '">' + escapeHtml(status) + '</p><p class="history-explanation">' + escapeHtml(inputName) + '</p><p class="history-meta">' + escapeHtml(inputType) + ' · ' + escapeHtml(scan.confidence || '') + '</p></div><span class="history-date">' + date + '</span>';
     list.appendChild(item);
   });
 }
@@ -1544,37 +1675,50 @@ async function loadHistory() {
 function renderHistoryDetail(scan) {
   const detail = document.getElementById('historyDetail');
   if (!detail) return;
-  detail.innerHTML = '\n    <div class="detail-block"><p class="detail-label">Análisis seleccionado</p><p class="ingredients-text"><strong>' + escapeHtml(scan.status) + '</strong> · ' + escapeHtml(scan.input_name || '') + '</p><p class="ingredients-text">' + escapeHtml(scan.explanation || '') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes</p><p class="ingredients-text">' + escapeHtml(scan.ingredients_found || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyHistoryDetail(\'' + scan.id + '\')">📋 Copiar</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'safe\')">⭐ Seguro</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'avoid\')">🚫 Evitar</button></div>\n  ';
+  const status = normalizeStatus(scan.status);
+  const inputName = scan.input_name || scan.product_name || scan.file_name || 'Análisis SafeBite';
+  detail.innerHTML = '\n    <div class="detail-block"><p class="detail-label">Análisis seleccionado</p><p class="ingredients-text"><strong>' + escapeHtml(status) + '</strong> · ' + escapeHtml(inputName) + '</p><p class="ingredients-text">' + escapeHtml(scan.explanation || '') + '</p></div>\n    <div class="detail-block"><p class="detail-label">Ingredientes</p><p class="ingredients-text">' + escapeHtml(scan.ingredients_found || scan.ingredients || 'Sin ingredientes guardados.') + '</p></div>\n    <div class="result-actions-card"><button class="btn-secondary compact" onclick="copyHistoryDetail(\'' + scan.id + '\')">📋 Copiar</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'safe\')">⭐ Seguro</button><button class="btn-secondary compact" onclick="saveHistoryAsProduct(\'' + scan.id + '\', \'avoid\')">🚫 Evitar</button></div>\n  ';
+}
+
+async function findHistoryItem(id) {
+  if (String(id).startsWith('local_')) {
+    return readLocalArray('analysis_history').find(x => x.id === id) || null;
+  }
+  try {
+    const { data, error } = await sb.from('analysis_history').select('*').eq('id', id).single();
+    if (error) throw error;
+    return data || null;
+  } catch(e) {
+    return readLocalArray('analysis_history').find(x => x.id === id) || null;
+  }
 }
 
 async function copyHistoryDetail(id) {
-  const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
+  const data = await findHistoryItem(id);
   if (!data) return;
-  const text = `SafeBite - Historial\nEntrada: ${data.input_name}\nEstado: ${data.status}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}`;
+  const inputName = data.input_name || data.product_name || data.file_name || 'Análisis SafeBite';
+  const text = `SafeBite - Historial\nEntrada: ${inputName}\nEstado: ${normalizeStatus(data.status)}\nConfianza: ${data.confidence || '—'}\n\n${data.explanation || data.notes || ''}\n\nIngredientes: ${data.ingredients_found || data.ingredients || '—'}`;
   copyToClipboardOrShow(text, 'Análisis copiado.');
 }
 
 async function saveHistoryAsProduct(id, kind) {
-  const { data } = await sb.from('analysis_history').select('*').eq('id', id).single();
+  const data = await findHistoryItem(id);
   if (!data) return;
+  if (kind === 'safe' && normalizeStatus(data.status) !== 'APTO') {
+    return alert('No se puede guardar como seguro si el resultado no es APTO.');
+  }
   const payload = {
-    user_id: data.user_id,
-    child_id: data.child_id,
-    analysis_id: data.id,
+    user_id: data.user_id || state.user.id,
+    child_id: data.child_id || state.activeChild?.id || null,
     kind,
     decision: kind,
-    product_name: data.input_name || data.product_name || 'Producto del historial',
-    status: data.status,
-    confidence: data.confidence,
+    product_name: data.input_name || data.product_name || data.file_name || 'Producto del historial',
+    status: normalizeStatus(data.status),
     explanation: data.explanation || '',
-    summary: data.summary || '',
     ingredients: data.ingredients_found || data.ingredients || '',
     ingredients_found: data.ingredients_found || data.ingredients || '',
     risks: data.risks || [],
     hidden_allergens: data.hidden_allergens || [],
-    input_type: data.input_type,
-    input_name: data.input_name,
-    input_mode: data.input_mode,
     barcode: data.input_barcode || data.barcode || null,
     brand: data.brand || null,
     image_url: data.image_url || null,
@@ -1587,7 +1731,7 @@ async function saveHistoryAsProduct(id, kind) {
   renderSavedProducts().catch(()=>{});
 }
 
-// ── Screen routing ─────────────────────────────────────────────────────────────
+// ── Screen routing// ── Screen routing ─────────────────────────────────────────────────────────────
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => { s.classList.remove('active'); s.classList.add('hidden'); });
   const t = document.getElementById(id);

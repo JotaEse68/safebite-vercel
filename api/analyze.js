@@ -11,6 +11,32 @@ const DEFAULT_RULES = [
 
 const STATUS_SCORE = { 'NO VERIFICABLE': 0, APTO: 1, PRECAUCION: 2, 'NO APTO': 3 };
 
+function looksNonVerifiableText(text) {
+  const t = String(text || '').toLowerCase();
+  if (!t.trim() || t.trim().length < 5) return true;
+  return /no puedo|no se puede|no hay ingredientes|sin ingredientes|no se distinguen|no se lee|no puedo leer|solo se ve|plato preparado|foto del plato|no contiene una lista|no hay lista|no es una etiqueta|no se puede determinar/.test(t);
+}
+
+function looksLikeIngredientList(text) {
+  const t = String(text || '');
+  return /(ingredientes?|contiene|puede contener|trazas?|\be-?\d{3}\b|agua|sal|az[uú]car|aceite|harina|leche|huevo|soja|gluten|trigo|arroz|ma[ií]z|prote[ií]na|conservador|estabilizador|aroma|dextrosa|jarabe|gelificante|antioxidante)/i.test(t);
+}
+
+function buildNoVerifiableResult(reason, ingredientsText = '') {
+  return {
+    status: 'NO VERIFICABLE',
+    confidence: 'baja',
+    explanation: reason || 'No hay ingredientes verificables suficientes para decidir con seguridad. Sube la etiqueta, pega los ingredientes o usa una ficha de producto completa.',
+    risks: ['Información insuficiente para decisión segura'],
+    hidden_allergens: [],
+    traces_warning: false,
+    ingredients_found: ingredientsText || '',
+    evidence: ['Criterio SafeBite: sin ingredientes verificables no se marca como APTO']
+  };
+}
+
+
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -46,22 +72,23 @@ export default async function handler(req, res) {
     }
 
     if (!ingredientsText || ingredientsText.length < 5) {
-      return res.status(200).json({
-        status: mode === 'plate' ? 'NO VERIFICABLE' : 'PRECAUCION',
-        confidence: 'baja',
-        explanation: mode === 'plate'
+      return res.status(200).json(buildNoVerifiableResult(
+        mode === 'plate'
           ? 'Una foto del plato no permite confirmar ingredientes, trazas o contaminación cruzada. Sube etiqueta, menú detallado o escribe ingredientes para una decisión fiable.'
-          : 'No pude leer el texto con suficiente seguridad. Repite la foto con mejor luz o pega los ingredientes manualmente.',
-        risks: mode === 'plate' ? ['Ingredientes no verificables solo por imagen'] : ['Texto ilegible o incompleto'],
-        hidden_allergens: [],
-        traces_warning: false,
-        ingredients_found: '',
-        evidence: mode === 'plate' ? ['Criterio SafeBite: foto de plato sin ingredientes → NO VERIFICABLE'] : []
-      });
+          : 'No pude leer una lista de ingredientes con suficiente seguridad. Repite la foto con mejor luz o pega los ingredientes manualmente.',
+        ''
+      ));
     }
 
     if (mode === 'plate') {
       return res.status(200).json(buildPlateResult(ingredientsText, childName));
+    }
+
+    if (mode !== 'text' && (looksNonVerifiableText(ingredientsText) || !looksLikeIngredientList(ingredientsText))) {
+      return res.status(200).json(buildNoVerifiableResult(
+        'No he detectado una lista de ingredientes verificable. Para decidir con seguridad, sube una foto clara de la etiqueta, pega los ingredientes o usa una ficha completa del producto.',
+        ingredientsText
+      ));
     }
 
     const deterministic = applySafeBiteRules(ingredientsText, allergens, expertBase.rules);
@@ -273,15 +300,26 @@ function mergeResults(ai, deterministic, ingredientsText, expertBase) {
       : 'He detectado un posible riesgo para el perfil configurado. SafeBite prioriza precaución cuando hay duda.';
   }
 
+  let safeStatus = finalStatus;
+  let safeConfidence = ai.confidence || deterministic.confidence || 'media';
+  let safeExplanation = explanation;
+  const ingredientsFound = (ai.ingredients_found || ingredientsText || '').slice(0, 1400);
+
+  if (safeStatus === 'APTO' && (looksNonVerifiableText(ingredientsFound + ' ' + safeExplanation) || !looksLikeIngredientList(ingredientsFound))) {
+    safeStatus = 'NO VERIFICABLE';
+    safeConfidence = 'baja';
+    safeExplanation = 'No hay ingredientes verificables suficientes para confirmar que este producto sea apto. Sube una etiqueta clara, pega ingredientes o usa una ficha completa.';
+  }
+
   return {
-    status: finalStatus,
-    confidence: ai.confidence || deterministic.confidence || 'media',
-    explanation,
-    risks,
+    status: safeStatus,
+    confidence: safeConfidence,
+    explanation: safeExplanation,
+    risks: safeStatus === 'NO VERIFICABLE' && !risks.length ? ['Información insuficiente para decisión segura'] : risks,
     hidden_allergens: hidden,
     traces_warning: Boolean(ai.traces_warning || deterministic.traces_warning),
-    ingredients_found: (ai.ingredients_found || ingredientsText || '').slice(0, 1400),
-    evidence,
+    ingredients_found: ingredientsFound,
+    evidence: safeStatus === 'NO VERIFICABLE' ? unique(['Criterio SafeBite: sin ingredientes verificables no se marca como APTO', ...evidence]) : evidence,
     expert_source: expertBase.source,
     expert_documents_used: (expertBase.documents || []).map(d => d.title || d.name).filter(Boolean).slice(0, 5)
   };
